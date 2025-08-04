@@ -33,6 +33,16 @@ class ColumnMapper:
         self.synonyms = self._load_synonyms(config_path)
         self.patterns = self._load_patterns(config_path)
         self.mapping_history = []
+
+    def get_expected_columns(self):
+        """
+        Return the list of expected column names
+        
+        Returns:
+            list: Expected column names
+        """
+        return list(self.expected_columns.keys())
+        
         
     def _get_expected_columns(self):
         """

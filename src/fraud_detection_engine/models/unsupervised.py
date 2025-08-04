@@ -65,6 +65,17 @@ class UnsupervisedModels:
             
             # Prepare data
             X = df[numeric_cols].fillna(0)
+
+            # Add this BEFORE scaling:
+            X = data.values.astype(np.float64)
+
+            # Replace infinite values with NaNs:
+            X[np.isinf(X)] = np.nan
+
+            # Impute missing values (including the NaNs we just created):
+            from sklearn.impute import SimpleImputer
+            imputer = SimpleImputer(strategy='mean')
+            X = imputer.fit_transform(X)
             
             # Scale data
             scaler = StandardScaler()
