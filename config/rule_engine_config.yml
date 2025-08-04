@@ -1,0 +1,147 @@
+# Rule engine configuration for fraud detection
+
+# Rule categories
+categories:
+  amount_rules:
+    enabled: true
+    weight: 0.3
+    
+  frequency_rules:
+    enabled: true
+    weight: 0.2
+    
+  location_rules:
+    enabled: true
+    weight: 0.2
+    
+  time_rules:
+    enabled: true
+    weight: 0.15
+    
+  identity_rules:
+    enabled: true
+    weight: 0.15
+
+# Amount-based rules
+amount_rules:
+  high_amount:
+    enabled: true
+    threshold: 10000
+    description: "Transaction amount exceeds threshold"
+    
+  unusual_amount_for_sender:
+    enabled: true
+    std_multiplier: 3
+    min_transactions: 5
+    description: "Amount is unusual for the sender"
+    
+  unusual_amount_for_receiver:
+    enabled: true
+    std_multiplier: 3
+    min_transactions: 5
+    description: "Amount is unusual for the receiver"
+    
+  round_amount:
+    enabled: true
+    threshold: 1000
+    description: "Transaction amount is suspiciously round"
+    
+  amount_multiple:
+    enabled: true
+    multiple: 1000
+    description: "Transaction amount is a multiple of a suspicious value"
+
+# Frequency-based rules
+frequency_rules:
+  high_frequency_sender:
+    enabled: true
+    time_window: "1H"
+    max_transactions: 10
+    description: "High transaction frequency from sender"
+    
+  high_frequency_receiver:
+    enabled: true
+    time_window: "1H"
+    max_transactions: 10
+    description: "High transaction frequency to receiver"
+    
+  rapid_succession:
+    enabled: true
+    time_window: "5M"
+    min_transactions: 3
+    description: "Multiple transactions in rapid succession"
+    
+  burst_pattern:
+    enabled: true
+    time_window: "1H"
+    threshold_multiplier: 3
+    description: "Burst of transactions compared to normal pattern"
+
+# Location-based rules
+location_rules:
+  cross_border:
+    enabled: true
+    description: "Transaction crosses international borders"
+    
+  high_risk_country:
+    enabled: true
+    countries: ["North Korea", "Iran", "Syria", "Cuba"]
+    description: "Transaction involves high-risk country"
+    
+  unusual_location_for_sender:
+    enabled: true
+    description: "Transaction from unusual location for sender"
+    
+  unusual_location_for_receiver:
+    enabled: true
+    description: "Transaction to unusual location for receiver"
+    
+  ip_mismatch:
+    enabled: true
+    description: "IP location does not match sender location"
+
+# Time-based rules
+time_rules:
+  unusual_hour:
+    enabled: true
+    start_hour: 23
+    end_hour: 5
+    description: "Transaction during unusual hours"
+    
+  weekend:
+    enabled: true
+    description: "Transaction on weekend"
+    
+  holiday:
+    enabled: true
+    description: "Transaction on public holiday"
+    
+  rapid_time_pattern:
+    enabled: true
+    time_window: "1D"
+    min_transactions: 5
+    description: "Unusual pattern of transaction timing"
+
+# Identity-based rules
+identity_rules:
+  new_sender:
+    enabled: true
+    time_window: "7D"
+    description: "First transaction from new sender"
+    
+  new_receiver:
+    enabled: true
+    time_window: "7D"
+    description: "First transaction to new receiver"
+    
+  high_risk_entity:
+    enabled: true
+    description: "Transaction involves high-risk entity"
+    
+  sanctioned_entity:
+    enabled: true
+    description: "Transaction involves sanctioned entity"
+    
+  peer_to_peer_pattern:
+    enabled: true
+    description: "Pattern suggesting peer-to-peer transfer scheme"

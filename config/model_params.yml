@@ -1,0 +1,101 @@
+# Model parameters for fraud detection system
+
+# Unsupervised model parameters
+unsupervised:
+  isolation_forest:
+    n_estimators: 100
+    max_samples: 'auto'
+    contamination: 0.01
+    max_features: 1.0
+    bootstrap: False
+    n_jobs: -1
+    random_state: 42
+    
+  local_outlier_factor:
+    n_neighbors: 20
+    algorithm: 'auto'
+    leaf_size: 30
+    metric: 'minkowski'
+    p: 2
+    metric_params: null
+    contamination: 0.01
+    n_jobs: -1
+    
+  autoencoder:
+    encoding_dim: 10
+    hidden_layers: [50, 25]
+    activation: 'relu'
+    optimizer: 'adam'
+    loss: 'mean_squared_error'
+    epochs: 100
+    batch_size: 32
+    validation_split: 0.1
+    verbose: 0
+
+# Supervised model parameters
+supervised:
+  random_forest:
+    n_estimators: 100
+    criterion: 'gini'
+    max_depth: null
+    min_samples_split: 2
+    min_samples_leaf: 1
+    min_weight_fraction_leaf: 0.0
+    max_features: 'auto'
+    max_leaf_nodes: null
+    min_impurity_decrease: 0.0
+    bootstrap: True
+    oob_score: False
+    n_jobs: -1
+    random_state: 42
+    class_weight: 'balanced'
+    
+  xgboost:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 1.0
+    colsample_bytree: 1.0
+    gamma: 0
+    reg_alpha: 0
+    reg_lambda: 1
+    random_state: 42
+    scale_pos_weight: 1
+    
+  logistic_regression:
+    penalty: 'l2'
+    C: 1.0
+    fit_intercept: True
+    intercept_scaling: 1
+    class_weight: 'balanced'
+    random_state: 42
+    solver: 'lbfgs'
+    max_iter: 1000
+    multi_class: 'auto'
+    
+  svm:
+    C: 1.0
+    kernel: 'rbf'
+    degree: 3
+    gamma: 'scale'
+    coef0: 0.0
+    shrinking: True
+    probability: True
+    tol: 0.001
+    cache_size: 200
+    class_weight: 'balanced'
+    random_state: 42
+
+# Neural network parameters
+neural_network:
+  hidden_layers: [128, 64, 32]
+  activation: 'relu'
+  optimizer: 'adam'
+  loss: 'binary_crossentropy'
+  metrics: ['accuracy', 'precision', 'recall']
+  epochs: 100
+  batch_size: 32
+  validation_split: 0.2
+  verbose: 1
+  dropout_rate: 0.2
+  early_stopping_patience: 10

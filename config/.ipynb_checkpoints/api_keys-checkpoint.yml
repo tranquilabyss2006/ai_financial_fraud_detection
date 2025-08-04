@@ -1,0 +1,50 @@
+
+# API keys for external services
+
+# Gemini API for AI integration
+gemini:
+  api_key: "AIzaSyB_lLIZ_ZIE__qxMS-XwrqA6G5X6qY05W4"
+  model: "gemini-pro"
+  temperature: 0.2
+  max_tokens: 1000
+  top_p: 0.8
+  top_k: 40
+
+# OpenAI API (alternative)
+openai:
+  api_key: "sk-1234abcd1234abcd1234abcd1234abcd1234abcd"
+  model: "gpt-4"
+  temperature: 0.2
+  max_tokens: 1000
+
+# News API for fraud pattern updates
+news_api:
+  api_key: "32cc2bc984b6462b9031dd8daeaeb710"
+  sources: ["reuters", "bloomberg", "financial-times"]
+  keywords: ["fraud", "money laundering", "financial crime", "cybersecurity"]
+  lookback_days: 7
+
+# Geolocation API
+geolocation:
+  api_key: "prj_live_sk_ee02a5edfe7b2dac460f5c54a239a12576d59cff"
+  endpoint: "https://api.geolocation.example.com/v1"
+
+# Sanctions list APIs - NOT AVAILABLE
+sanctions:
+  api_key: "NOT_AVAILABLE"
+  update_frequency: "daily"
+
+# Tax compliance database - NOT AVAILABLE
+tax_compliance:
+  api_key: "NOT_AVAILABLE"
+  endpoint: "https://api.taxcompliance.example.com/v1"
+
+# Bank verification API - NOT AVAILABLE
+bank_verification:
+  api_key: "NOT_AVAILABLE"
+  endpoint: "https://api.bankverification.example.com/v1"
+
+# Identity verification API - NOT AVAILABLE
+identity_verification:
+  api_key: "NOT_AVAILABLE"
+  endpoint: "https://api.identityverification.example.com/v1"
