@@ -1,3 +1,5 @@
+
+
 """
 Main Dashboard for Financial Fraud Detection System
 Streamlit-based user interface for the fraud detection platform
@@ -334,6 +336,46 @@ def render_column_mapping():
         except Exception as e:
             st.error(f"Error processing data: {str(e)}")
 
+def validate_features(df):
+    """
+    Validate and clean feature DataFrame:
+    1. Replace infinite values with NaNs
+    2. Handle extremely large values
+    3. Impute missing values
+    """
+    df = df.copy()
+    
+    # 1. Replace infinite values with NaN
+    df = df.replace([np.inf, -np.inf], np.nan)
+    
+    # 2. Handle extremely large values (>1e10)
+    large_value_cols = []
+    for col in df.columns:
+        if df[col].dtype in [np.float64, np.float32]:
+            max_val = np.nanmax(np.abs(df[col]))
+            if max_val > 1e10:
+                large_value_cols.append(col)
+                # Apply log transformation to positive values
+                if (df[col] > 0).all():
+                    df[col] = np.log1p(df[col])
+                else:
+                    # Cap extreme values for columns with negatives
+                    df[col] = np.clip(df[col], -1e10, 1e10)
+    
+    # 3. Impute missing values
+    from sklearn.impute import SimpleImputer
+    imputer = SimpleImputer(strategy='mean')
+    df_imputed = imputer.fit_transform(df)
+    df = pd.DataFrame(df_imputed, columns=df.columns, index=df.index)
+    
+    # Log any transformations
+    if large_value_cols:
+        print(f"Applied transformations to large-value columns: {large_value_cols}")
+    if df.isna().sum().sum() > 0:
+        print(f"Imputed {df.isna().sum().sum()} missing values")
+    
+    return df
+
 # Analysis Settings Page
 def render_analysis_settings():
     """Render the analysis settings page"""
@@ -592,7 +634,8 @@ def render_run_detection():
             # Supervised models
             if settings["models"]["Supervised Models"]:
                 supervised = SupervisedModels(test_size=settings["test_size"])
-                supervised_results = supervised.run_models(features_df)
+                # In supervised model execution
+                supervised_results = supervised.run_models(validate_features(features_df))
                 model_results["supervised"] = supervised_results
                 progress_bar.progress(70)
             
