@@ -2,7 +2,6 @@
 Supervised Models Module
 Implements supervised learning models for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -16,7 +15,7 @@ from sklearn.metrics import (
     roc_auc_score, confusion_matrix, classification_report, 
     precision_recall_curve, average_precision_score, roc_curve
 )
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
 from sklearn.feature_selection import SelectKBest, f_classif, RFE
 from imblearn.over_sampling import SMOTE, ADASYN, BorderlineSMOTE
 from imblearn.under_sampling import RandomUnderSampler, TomekLinks
@@ -29,7 +28,6 @@ import seaborn as sns
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -111,6 +109,9 @@ class SupervisedModels:
             # Prepare data
             X = df[feature_cols].copy()
             
+            # Clean data before processing
+            X = self._clean_data(X)
+            
             # Handle categorical features
             for col in categorical_features:
                 if col in X.columns:
@@ -124,9 +125,9 @@ class SupervisedModels:
                 X, y, test_size=self.test_size, random_state=self.random_state, stratify=y
             )
             
-            # Scale numeric features
+            # Scale numeric features using RobustScaler
             if numeric_features:
-                scaler = StandardScaler()
+                scaler = RobustScaler()
                 X_train[numeric_features] = scaler.fit_transform(X_train[numeric_features])
                 X_test[numeric_features] = scaler.transform(X_test[numeric_features])
                 self.scalers['numeric'] = scaler
@@ -533,6 +534,42 @@ class SupervisedModels:
             logger.error(f"Error running supervised models: {str(e)}")
             raise
     
+    def _clean_data(self, X):
+        """
+        Clean data by handling infinity, NaN, and extreme values
+        
+        Args:
+            X (DataFrame): Input data
+            
+        Returns:
+            DataFrame: Cleaned data
+        """
+        try:
+            # Replace infinity with NaN
+            X = X.replace([np.inf, -np.inf], np.nan)
+            
+            # Replace extremely large values with a more reasonable maximum
+            for col in X.columns:
+                if X[col].dtype in ['float64', 'int64']:
+                    # Calculate 99th percentile as a reasonable maximum
+                    percentile_99 = np.nanpercentile(X[col], 99)
+                    if not np.isnan(percentile_99):
+                        # Cap values at 10 times the 99th percentile
+                        max_val = percentile_99 * 10
+                        X[col] = np.where(X[col] > max_val, max_val, X[col])
+                        
+                        # Similarly, handle extremely negative values
+                        percentile_1 = np.nanpercentile(X[col], 1)
+                        if not np.isnan(percentile_1):
+                            min_val = percentile_1 * 10
+                            X[col] = np.where(X[col] < min_val, min_val, X[col])
+            
+            return X
+            
+        except Exception as e:
+            logger.error(f"Error cleaning data: {str(e)}")
+            return X
+    
     def _calculate_performance_metrics(self, y_true, y_pred, y_proba):
         """
         Calculate performance metrics for a model
@@ -619,6 +656,9 @@ class SupervisedModels:
             
             # Prepare data
             X = df[feature_names].copy()
+            
+            # Clean the data
+            X = self._clean_data(X)
             
             # Handle categorical features
             for col in X.columns:

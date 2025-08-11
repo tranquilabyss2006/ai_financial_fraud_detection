@@ -2,7 +2,6 @@
 Column Mapper Module
 Handles intelligent mapping of user columns to expected format
 """
-
 import pandas as pd
 import numpy as np
 import re
@@ -11,7 +10,6 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import yaml
 import os
-
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,8 +40,8 @@ class ColumnMapper:
             list: Expected column names
         """
         return list(self.expected_columns.keys())
-        
-        
+
+    
     def _get_expected_columns(self):
         """
         Get the expected columns for the fraud detection system

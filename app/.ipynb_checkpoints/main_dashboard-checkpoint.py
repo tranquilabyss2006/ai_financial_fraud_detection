@@ -1,10 +1,7 @@
-
-
 """
 Main Dashboard for Financial Fraud Detection System
 Streamlit-based user interface for the fraud detection platform
 """
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,6 +13,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import yaml
+from io import BytesIO
+import logging
+import tempfile
+import chardet
+import traceback
 
 # Add src to path to import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -34,6 +36,10 @@ from fraud_detection_engine.analysis.explainability import Explainability
 from fraud_detection_engine.reporting.pdf_generator import PDFGenerator
 from fraud_detection_engine.utils.api_utils import is_api_available
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Set page configuration
 st.set_page_config(
     page_title="Financial Fraud Detection System",
@@ -46,65 +52,29 @@ st.set_page_config(
 @st.cache_resource
 def load_config():
     """Load configuration from YAML files"""
-    config = {
-        'model_params': {},
-        'rule_engine': {},
-        'api_keys': {}
-    }
-    
+    config = {}
     try:
-        # Try to load model_params.yml
-        try:
-            with open('config/model_params.yml', 'r') as f:
-                config['model_params'] = yaml.safe_load(f)
-        except FileNotFoundError:
-            # Create default model_params
-            config['model_params'] = {
-                'unsupervised': {
-                    'isolation_forest': {
-                        'n_estimators': 100,
-                        'contamination': 0.01,
-                        'random_state': 42
-                    }
-                }
-            }
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Try to load rule_engine_config.yml
-        try:
-            with open('config/rule_engine_config.yml', 'r') as f:
-                config['rule_engine'] = yaml.safe_load(f)
-        except FileNotFoundError:
-            # Create default rule_engine config
-            config['rule_engine'] = {
-                'rules': {
-                    'high_amount': {
-                        'enabled': True,
-                        'threshold': 10000,
-                        'weight': 0.3
-                    }
-                }
-            }
+        # Construct paths to config files relative to script location
+        model_params_path = os.path.join(script_dir, '..', 'config', 'model_params.yml')
+        rule_engine_path = os.path.join(script_dir, '..', 'config', 'rule_engine_config.yml')
+        api_keys_path = os.path.join(script_dir, '..', 'config', 'api_keys.yml')
         
-        # Try to load api_keys.yml
-        try:
-            with open('config/api_keys.yml', 'r') as f:
-                config['api_keys'] = yaml.safe_load(f)
-        except FileNotFoundError:
-            # Create default api_keys
-            config['api_keys'] = {
-                'gemini': {'api_key': 'NOT_AVAILABLE'},
-                'openai': {'api_key': 'NOT_AVAILABLE'},
-                'news_api': {'api_key': 'NOT_AVAILABLE'},
-                'geolocation': {'api_key': 'NOT_AVAILABLE'},
-                'sanctions': {'api_key': 'NOT_AVAILABLE'},
-                'tax_compliance': {'api_key': 'NOT_AVAILABLE'},
-                'bank_verification': {'api_key': 'NOT_AVAILABLE'},
-                'identity_verification': {'api_key': 'NOT_AVAILABLE'}
-            }
-            
+        with open(model_params_path, 'r') as f:
+            config['model_params'] = yaml.safe_load(f)
+        with open(rule_engine_path, 'r') as f:
+            config['rule_engine'] = yaml.safe_load(f)
+        with open(api_keys_path, 'r') as f:
+            config['api_keys'] = yaml.safe_load(f)
     except Exception as e:
         st.error(f"Error loading configuration: {str(e)}")
-    
+        config = {
+            'model_params': {},
+            'rule_engine': {},
+            'api_keys': {}
+        }
     return config
 
 config = load_config()
@@ -124,6 +94,10 @@ if 'explanations' not in st.session_state:
     st.session_state.explanations = None
 if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
+if 'original_data' not in st.session_state:
+    st.session_state.original_data = None
+if 'features_df' not in st.session_state:
+    st.session_state.features_df = None
 
 # Sidebar
 def render_sidebar():
@@ -196,20 +170,91 @@ def render_data_upload():
     Upload your transaction data for analysis. The system supports CSV and Excel files.
     """)
     
-    # File upload
+    # Add debug information
+    st.write("### Debug Information")
+    st.write(f"Current working directory: {os.getcwd()}")
+    st.write(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+    
+    # File upload with enhanced error handling
     uploaded_file = st.file_uploader(
         "Choose a CSV or Excel file",
         type=['csv', 'xlsx', 'xls'],
-        help="Upload a file containing transaction data"
+        help="Upload a file containing transaction data",
+        key="file_uploader"
     )
+    
+    # Debug: Show if file was uploaded
+    if uploaded_file is not None:
+        st.write("### File Upload Details")
+        st.write(f"File name: {uploaded_file.name}")
+        st.write(f"File type: {uploaded_file.type}")
+        st.write(f"File size: {uploaded_file.size} bytes")
     
     if uploaded_file is not None:
         try:
-            # Read the file
+            # Process the file based on its type
             if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
+                # For CSV files, try multiple encodings
+                encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+                df = None
+                
+                # First, try to detect encoding with chardet
+                try:
+                    raw_data = uploaded_file.read()
+                    result = chardet.detect(raw_data)
+                    detected_encoding = result['encoding']
+                    confidence = result['confidence']
+                    
+                    st.write(f"Detected encoding: {detected_encoding} with confidence {confidence:.2f}")
+                    
+                    # Reset file pointer
+                    uploaded_file.seek(0)
+                    
+                    # Try with detected encoding first
+                    try:
+                        df = pd.read_csv(uploaded_file, encoding=detected_encoding)
+                        st.success(f"Successfully read CSV with {detected_encoding} encoding")
+                    except UnicodeDecodeError:
+                        st.warning(f"Failed with detected encoding: {detected_encoding}")
+                        # Try other encodings
+                        for encoding in encodings:
+                            if encoding != detected_encoding:  # Skip the one we already tried
+                                try:
+                                    # Reset file pointer
+                                    uploaded_file.seek(0)
+                                    df = pd.read_csv(uploaded_file, encoding=encoding)
+                                    st.success(f"Successfully read CSV with {encoding} encoding")
+                                    break
+                                except UnicodeDecodeError:
+                                    st.warning(f"Failed with {encoding} encoding: Unicode decode error")
+                                except Exception as e:
+                                    st.warning(f"Failed with {encoding} encoding: {str(e)}")
+                except Exception as e:
+                    st.warning(f"Error detecting encoding: {str(e)}")
+                    # Try common encodings as fallback
+                    for encoding in encodings:
+                        try:
+                            # Reset file pointer
+                            uploaded_file.seek(0)
+                            df = pd.read_csv(uploaded_file, encoding=encoding)
+                            st.success(f"Successfully read CSV with {encoding} encoding")
+                            break
+                        except Exception as e:
+                            st.warning(f"Failed with {encoding} encoding: {str(e)}")
+                
+                if df is None:
+                    st.error("Could not read CSV file with any encoding")
+                    return
             else:
-                df = pd.read_excel(uploaded_file)
+                # For Excel files
+                try:
+                    df = pd.read_excel(uploaded_file)
+                    st.success("Successfully read Excel file")
+                except Exception as e:
+                    st.error(f"Error reading Excel file: {str(e)}")
+                    st.write("### Error Details")
+                    st.exception(e)
+                    return
             
             # Display data info
             st.success(f"File uploaded successfully! Shape: {df.shape}")
@@ -218,6 +263,8 @@ def render_data_upload():
             
             # Store in session state
             st.session_state.data = df
+            st.session_state.original_data = df.copy()
+            st.write("Data stored in session state")
             
             # Show column information
             st.write("### Column Information")
@@ -235,23 +282,108 @@ def render_data_upload():
             st.dataframe(df.describe(include='all'))
             
         except Exception as e:
-            st.error(f"Error reading file: {str(e)}")
+            st.error(f"Error processing file: {str(e)}")
+            st.write("### Error Details")
+            st.exception(e)
+            st.write("### Full Traceback")
+            st.text(traceback.format_exc())
     
     # Sample data option
     st.markdown("---")
     st.subheader("Or Use Sample Data")
+    
     if st.button("Load Sample Data"):
         try:
-            sample_path = os.path.join('..', 'data', 'sample_transactions.csv')
+            # Get the directory where this script is located
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            sample_path = os.path.join(script_dir, '..', 'data', 'sample_transactions.csv')
+            st.write(f"Looking for sample data at: {sample_path}")
+            
             if os.path.exists(sample_path):
                 df = pd.read_csv(sample_path)
                 st.session_state.data = df
+                st.session_state.original_data = df.copy()
                 st.success(f"Sample data loaded! Shape: {df.shape}")
                 st.dataframe(df.head(10))
             else:
                 st.warning("Sample data file not found")
+                st.write("Creating sample data...")
+                
+                # Create sample data if it doesn't exist
+                np.random.seed(42)
+                sample_data = pd.DataFrame({
+                    'transaction_id': range(1, 101),
+                    'timestamp': pd.date_range('2023-01-01', periods=100, freq='D'),
+                    'amount': np.random.lognormal(5, 1, 100),
+                    'sender_id': [f'sender_{i % 10}' for i in range(100)],
+                    'receiver_id': [f'receiver_{i % 10}' for i in range(100)],
+                    'currency': ['USD'] * 100,
+                    'description': [f'Transaction {i}' for i in range(1, 101)]
+                })
+                
+                # Ensure data directory exists
+                data_dir = os.path.join(script_dir, '..', 'data')
+                os.makedirs(data_dir, exist_ok=True)
+                sample_data.to_csv(sample_path, index=False)
+                st.write(f"Created sample data at: {sample_path}")
+                
+                # Load the newly created sample data
+                st.session_state.data = sample_data
+                st.session_state.original_data = sample_data.copy()
+                st.success(f"Sample data loaded! Shape: {sample_data.shape}")
+                st.dataframe(sample_data.head(10))
+                
         except Exception as e:
             st.error(f"Error loading sample data: {str(e)}")
+            st.write("### Error Details")
+            st.exception(e)
+            st.write("### Full Traceback")
+            st.text(traceback.format_exc())
+    
+    # Additional troubleshooting section
+    st.markdown("---")
+    st.subheader("Troubleshooting File Upload Issues")
+    
+    with st.expander("Click here if you're having trouble uploading files"):
+        st.write("""
+        ### Common Issues and Solutions:
+        
+        1. **File not uploading at all**:
+           - Try using a different browser (Chrome, Firefox, or Edge work best)
+           - Clear your browser cache and cookies
+           - Check if your file size is too large (try with a smaller file first)
+           - Make sure the file is not open in another program
+           - Try refreshing the page and uploading again
+        
+        2. **CSV file encoding issues**:
+           - Try saving your CSV file with UTF-8 encoding
+           - Use Excel to "Save As" and select "CSV UTF-8" format
+           - Try converting your file to Excel format (.xlsx)
+           - Check if your CSV has a BOM (Byte Order Mark) and try saving without it
+        
+        3. **Excel file issues**:
+           - Make sure your Excel file is not password protected
+           - Try saving as a different Excel format (.xlsx instead of .xls)
+           - Check if the file has any corrupted data or formatting
+        
+        4. **Permission issues**:
+           - Make sure the file is not read-only
+           - Try moving the file to your desktop first
+           - Check if your antivirus software is blocking the upload
+        
+        5. **Browser compatibility**:
+           - Update your browser to the latest version
+           - Try incognito/private browsing mode
+           - Disable browser extensions temporarily
+        
+        ### Alternative Methods:
+        
+        If the file uploader still doesn't work, you can:
+        1. Use the "Load Sample Data" button above
+        2. Place your CSV file in the `data` folder with the name `sample_transactions.csv`
+        3. Try converting your file to Excel format (.xlsx)
+        4. Try using a different device or browser
+        """)
 
 # Column Mapping Page
 def render_column_mapping():
@@ -336,46 +468,6 @@ def render_column_mapping():
         except Exception as e:
             st.error(f"Error processing data: {str(e)}")
 
-def validate_features(df):
-    """
-    Validate and clean feature DataFrame:
-    1. Replace infinite values with NaNs
-    2. Handle extremely large values
-    3. Impute missing values
-    """
-    df = df.copy()
-    
-    # 1. Replace infinite values with NaN
-    df = df.replace([np.inf, -np.inf], np.nan)
-    
-    # 2. Handle extremely large values (>1e10)
-    large_value_cols = []
-    for col in df.columns:
-        if df[col].dtype in [np.float64, np.float32]:
-            max_val = np.nanmax(np.abs(df[col]))
-            if max_val > 1e10:
-                large_value_cols.append(col)
-                # Apply log transformation to positive values
-                if (df[col] > 0).all():
-                    df[col] = np.log1p(df[col])
-                else:
-                    # Cap extreme values for columns with negatives
-                    df[col] = np.clip(df[col], -1e10, 1e10)
-    
-    # 3. Impute missing values
-    from sklearn.impute import SimpleImputer
-    imputer = SimpleImputer(strategy='mean')
-    df_imputed = imputer.fit_transform(df)
-    df = pd.DataFrame(df_imputed, columns=df.columns, index=df.index)
-    
-    # Log any transformations
-    if large_value_cols:
-        print(f"Applied transformations to large-value columns: {large_value_cols}")
-    if df.isna().sum().sum() > 0:
-        print(f"Imputed {df.isna().sum().sum()} missing values")
-    
-    return df
-
 # Analysis Settings Page
 def render_analysis_settings():
     """Render the analysis settings page"""
@@ -459,13 +551,21 @@ def render_analysis_settings():
     # Risk scoring settings
     st.subheader("Risk Scoring")
     
+    # Map the internal values to display names
+    method_display_names = {
+        "weighted_average": "Weighted Average",
+        "maximum": "Maximum Score", 
+        "custom": "Custom Weights"
+    }
+    
     scoring_method = st.selectbox(
         "Scoring Method",
-        ["Weighted Average", "Maximum Score", "Custom Weights"],
+        list(method_display_names.keys()),
+        format_func=lambda x: method_display_names[x],
         help="Method to combine scores from different models"
     )
     
-    if scoring_method == "Custom Weights":
+    if scoring_method == "custom":
         st.write("### Custom Weights")
         unsupervised_weight = st.slider("Unsupervised Weight", 0.0, 1.0, 0.4, 0.05)
         supervised_weight = st.slider("Supervised Weight", 0.0, 1.0, 0.4, 0.05)
@@ -536,6 +636,56 @@ def render_analysis_settings():
         st.session_state.settings = settings
         st.success("Settings saved! You can now run the detection analysis.")
 
+# Clean dataframe function
+def clean_dataframe(df):
+    """
+    Clean a DataFrame by handling infinity, NaN, and extreme values
+    
+    Args:
+        df (DataFrame): Input DataFrame
+        
+    Returns:
+        DataFrame: Cleaned DataFrame
+    """
+    try:
+        # Replace infinity with NaN
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
+        # Handle extreme values for numeric columns
+        for col in df.select_dtypes(include=[np.number]).columns:
+            # Calculate percentiles
+            p1 = np.nanpercentile(df[col], 1)
+            p99 = np.nanpercentile(df[col], 99)
+            
+            # Cap extreme values
+            if not np.isnan(p1) and not np.isnan(p99):
+                # Use a more conservative capping approach
+                iqr = p99 - p1
+                lower_bound = p1 - 1.5 * iqr
+                upper_bound = p99 + 1.5 * iqr
+                
+                df[col] = np.where(df[col] < lower_bound, lower_bound, df[col])
+                df[col] = np.where(df[col] > upper_bound, upper_bound, df[col])
+            
+            # Replace any remaining NaN with median
+            median_val = df[col].median()
+            if not np.isnan(median_val):
+                df[col] = df[col].fillna(median_val)
+        
+        # Handle categorical columns
+        for col in df.select_dtypes(include=['object', 'category']).columns:
+            # Fill NaN with mode or 'Unknown'
+            mode_val = df[col].mode()
+            if len(mode_val) > 0:
+                df[col] = df[col].fillna(mode_val[0])
+            else:
+                df[col] = df[col].fillna('Unknown')
+        
+        return df
+    except Exception as e:
+        logger.error(f"Error cleaning DataFrame: {str(e)}")
+        return df
+
 # Run Detection Page
 def render_run_detection():
     """Render the run detection page"""
@@ -570,7 +720,12 @@ def render_run_detection():
         st.write(f"- {model}: {status}")
     
     st.write("#### Risk Scoring")
-    st.write(f"- Method: {settings['scoring_method']}")
+    method_display_names = {
+        "weighted_average": "Weighted Average",
+        "maximum": "Maximum Score", 
+        "custom": "Custom Weights"
+    }
+    st.write(f"- Method: {method_display_names.get(settings['scoring_method'], settings['scoring_method'])}")
     if settings['custom_weights']:
         st.write(f"- Unsupervised Weight: {settings['custom_weights']['unsupervised']:.2f}")
         st.write(f"- Supervised Weight: {settings['custom_weights']['supervised']:.2f}")
@@ -596,28 +751,39 @@ def render_run_detection():
             
             features_df = st.session_state.processed_data.copy()
             
+            # Clean data before feature engineering
+            features_df = clean_dataframe(features_df)
+            
             # Statistical features
             if settings["features"]["Statistical Features"]:
                 stat_features = StatisticalFeatures()
                 features_df = stat_features.extract_features(features_df)
+                # Clean after feature extraction
+                features_df = clean_dataframe(features_df)
                 progress_bar.progress(20)
             
             # Graph features
             if settings["features"]["Graph Features"]:
                 graph_features = GraphFeatures()
                 features_df = graph_features.extract_features(features_df)
+                # Clean after feature extraction
+                features_df = clean_dataframe(features_df)
                 progress_bar.progress(30)
             
             # NLP features
             if settings["features"]["NLP Features"]:
                 nlp_features = NLPFeatures()
                 features_df = nlp_features.extract_features(features_df)
+                # Clean after feature extraction
+                features_df = clean_dataframe(features_df)
                 progress_bar.progress(40)
             
             # Time series features
             if settings["features"]["Time Series Features"]:
                 ts_features = TimeSeriesFeatures()
                 features_df = ts_features.extract_features(features_df)
+                # Clean after feature extraction
+                features_df = clean_dataframe(features_df)
                 progress_bar.progress(50)
             
             # Step 2: Model Training/Prediction
@@ -634,8 +800,7 @@ def render_run_detection():
             # Supervised models
             if settings["models"]["Supervised Models"]:
                 supervised = SupervisedModels(test_size=settings["test_size"])
-                # In supervised model execution
-                supervised_results = supervised.run_models(validate_features(features_df))
+                supervised_results = supervised.run_models(features_df)
                 model_results["supervised"] = supervised_results
                 progress_bar.progress(70)
             
@@ -648,20 +813,24 @@ def render_run_detection():
             
             # Step 3: Risk Scoring
             status_text.text("Step 3/5: Calculating Risk Scores...")
+            
+            # Initialize risk scorer with properly formatted method
+            scoring_method = settings["scoring_method"]
             risk_scorer = RiskScorer(
-                method=settings["scoring_method"],
+                method=scoring_method,
                 custom_weights=settings["custom_weights"]
             )
+            
             risk_scores = risk_scorer.calculate_scores(model_results, features_df)
             progress_bar.progress(90)
             
             # Step 4: Apply Thresholds
             status_text.text("Step 4/5: Applying Thresholds...")
-            if settings["threshold_method"] == "Fixed":
-                threshold = settings["threshold"]
+            if settings['threshold_method'] == "Fixed":
+                threshold = settings['threshold']
                 risk_scores["is_fraud"] = risk_scores["risk_score"] > threshold
-            elif settings["threshold_method"] == "Percentile":
-                percentile = settings["percentile"]
+            elif settings['threshold_method'] == "Percentile":
+                percentile = settings['percentile']
                 threshold = np.percentile(risk_scores["risk_score"], percentile)
                 risk_scores["is_fraud"] = risk_scores["risk_score"] > threshold
             else:  # Dynamic
@@ -697,7 +866,10 @@ def render_run_detection():
             
         except Exception as e:
             st.error(f"Error during analysis: {str(e)}")
+            st.write("### Error Details")
             st.exception(e)
+            st.write("### Full Traceback")
+            st.text(traceback.format_exc())
 
 # Results Dashboard Page
 def render_results_dashboard():
@@ -709,7 +881,6 @@ def render_results_dashboard():
         return
     
     risk_scores = st.session_state.risk_scores
-    features_df = st.session_state.features_df
     
     # Summary statistics
     st.subheader("Summary Statistics")
@@ -759,22 +930,58 @@ def render_results_dashboard():
     top_risky = risk_scores[risk_scores['is_fraud']].nlargest(10, 'risk_score')
     
     if len(top_risky) > 0:
-        # Merge with original data to show more details
-        if 'transaction_id' in features_df.columns:
-            top_risky_details = top_risky.merge(
-                features_df[['transaction_id', 'amount', 'timestamp', 'sender_id', 'receiver_id']],
-                left_index=True,
-                right_index=True
-            )
+        # Create a display dataframe with risk scores and available details
+        display_data = top_risky.copy()
+        
+        # Try to add transaction details from original data if available
+        if hasattr(st.session_state, 'original_data') and st.session_state.original_data is not None:
+            original_data = st.session_state.original_data
             
-            st.dataframe(
-                top_risky_details[[
-                    'transaction_id', 'amount', 'timestamp', 'sender_id', 
-                    'receiver_id', 'risk_score'
-                ]].sort_values('risk_score', ascending=False)
-            )
-        else:
-            st.dataframe(top_risky[['risk_score']].sort_values('risk_score', ascending=False))
+            # Get columns that exist in both dataframes
+            common_cols = set(original_data.columns) & set(display_data.columns)
+            
+            # If there are common columns, merge them
+            if common_cols:
+                display_data = display_data.drop(columns=list(common_cols), errors='ignore')
+                display_data = display_data.merge(
+                    original_data[list(common_cols)],
+                    left_index=True,
+                    right_index=True,
+                    how='left'
+                )
+        
+        # If we still don't have transaction_id, try to get it from features_df
+        if 'transaction_id' not in display_data.columns and hasattr(st.session_state, 'features_df'):
+            features_df = st.session_state.features_df
+            if 'transaction_id' in features_df.columns:
+                display_data = display_data.merge(
+                    features_df[['transaction_id']],
+                    left_index=True,
+                    right_index=True,
+                    how='left'
+                )
+        
+        # If we still don't have transaction_id, use the index as a fallback
+        if 'transaction_id' not in display_data.columns:
+            display_data['transaction_id'] = display_data.index
+        
+        # Ensure we have the required columns for display
+        display_cols = []
+        
+        # Always include transaction_id and risk_score
+        if 'transaction_id' in display_data.columns:
+            display_cols.append('transaction_id')
+        display_cols.append('risk_score')
+        
+        # Add other available columns if they exist
+        for col in ['amount', 'timestamp', 'sender_id', 'receiver_id']:
+            if col in display_data.columns:
+                display_cols.append(col)
+        
+        # Display the dataframe
+        st.dataframe(
+            display_data[display_cols].sort_values('risk_score', ascending=False)
+        )
     else:
         st.info("No fraudulent transactions detected")
     
@@ -833,11 +1040,11 @@ def render_results_dashboard():
         st.info("Model performance metrics not available. Run supervised models with labeled data to see performance metrics.")
     
     # Time series analysis
-    if 'timestamp' in features_df.columns:
+    if hasattr(st.session_state, 'original_data') and st.session_state.original_data is not None and 'timestamp' in st.session_state.original_data.columns:
         st.subheader("Fraud Over Time")
         
         # Create a copy for time series analysis
-        ts_data = features_df.copy()
+        ts_data = st.session_state.original_data.copy()
         ts_data['risk_score'] = risk_scores['risk_score']
         ts_data['is_fraud'] = risk_scores['is_fraud']
         
@@ -887,6 +1094,62 @@ def render_results_dashboard():
         )
         
         st.plotly_chart(fig, use_container_width=True)
+    elif hasattr(st.session_state, 'features_df') and st.session_state.features_df is not None and 'timestamp' in st.session_state.features_df.columns:
+        st.subheader("Fraud Over Time")
+        
+        # Create a copy for time series analysis
+        ts_data = st.session_state.features_df.copy()
+        ts_data['risk_score'] = risk_scores['risk_score']
+        ts_data['is_fraud'] = risk_scores['is_fraud']
+        
+        # Convert timestamp to datetime if needed
+        if not pd.api.types.is_datetime64_any_dtype(ts_data['timestamp']):
+            ts_data['timestamp'] = pd.to_datetime(ts_data['timestamp'])
+        
+        # Extract date components
+        ts_data['date'] = ts_data['timestamp'].dt.date
+        ts_data['hour'] = ts_data['timestamp'].dt.hour
+        
+        # Fraud by date
+        fraud_by_date = ts_data.groupby('date').agg({
+            'is_fraud': ['sum', 'count'],
+            'risk_score': 'mean'
+        }).reset_index()
+        
+        fraud_by_date.columns = ['date', 'fraud_count', 'total_count', 'avg_risk_score']
+        fraud_by_date['fraud_rate'] = fraud_by_date['fraud_count'] / fraud_by_date['total_count']
+        
+        fig = px.line(
+            fraud_by_date,
+            x='date',
+            y=['fraud_count', 'fraud_rate'],
+            title="Fraud Count and Rate Over Time",
+            labels={'value': 'Count / Rate', 'date': 'Date'}
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Fraud by hour of day
+        fraud_by_hour = ts_data.groupby('hour').agg({
+            'is_fraud': ['sum', 'count'],
+            'risk_score': 'mean'
+        }).reset_index()
+        
+        fraud_by_hour.columns = ['hour', 'fraud_count', 'total_count', 'avg_risk_score']
+        fraud_by_hour['fraud_rate'] = fraud_by_hour['fraud_count'] / fraud_by_hour['total_count']
+        
+        fig = px.bar(
+            fraud_by_hour,
+            x='hour',
+            y='fraud_count',
+            title="Fraud Count by Hour of Day",
+            color='avg_risk_score',
+            color_continuous_scale='Viridis'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Timestamp data not available for time series analysis")
 
 # Explainability Page
 def render_explainability():
@@ -911,38 +1174,60 @@ def render_explainability():
         return
     
     # Create a selector for transaction
-    if 'transaction_id' in st.session_state.features_df.columns:
+    # Check if we have transaction_id in features_df
+    if hasattr(st.session_state, 'features_df') and st.session_state.features_df is not None and 'transaction_id' in st.session_state.features_df.columns:
         # Merge with features to get transaction IDs
-        fraud_with_ids = fraud_transactions.merge(
+        fraud_with_ids = fraud_transactions.copy()
+        fraud_with_ids = fraud_with_ids.merge(
             st.session_state.features_df[['transaction_id']],
             left_index=True,
-            right_index=True
+            right_index=True,
+            how='left'
         )
         
-        transaction_options = fraud_with_ids['transaction_id'].tolist()
+        # Create transaction options
+        transaction_options = []
+        for idx in fraud_with_ids.index:
+            # Check if transaction_id exists and is not NaN
+            if 'transaction_id' in fraud_with_ids.columns and pd.notna(fraud_with_ids.loc[idx, 'transaction_id']):
+                transaction_id = fraud_with_ids.loc[idx, 'transaction_id']
+                transaction_options.append(f"{transaction_id} (Index: {idx})")
+            else:
+                transaction_options.append(f"Index: {idx}")
+        
         selected_transaction = st.selectbox("Select a transaction to analyze", transaction_options)
         
-        # Get the index of the selected transaction
-        selected_index = fraud_with_ids[fraud_with_ids['transaction_id'] == selected_transaction].index[0]
+        # Parse the selected option to get the index
+        if "Index:" in selected_transaction:
+            selected_index = int(selected_transaction.split("Index: ")[1])
+        else:
+            # Extract transaction_id from the selected option
+            transaction_id = selected_transaction.split(" (Index: ")[0]
+            # Find the index for this transaction_id
+            selected_index = fraud_with_ids[fraud_with_ids['transaction_id'] == transaction_id].index[0]
     else:
         # Use index as identifier
-        transaction_options = fraud_transactions.index.tolist()
+        transaction_options = [f"Index: {idx}" for idx in fraud_transactions.index]
         selected_transaction = st.selectbox("Select a transaction to analyze", transaction_options)
-        selected_index = selected_transaction
+        selected_index = int(selected_transaction.split("Index: ")[1])
     
     # Display transaction details
     st.write("### Transaction Details")
     
-    if 'transaction_id' in st.session_state.features_df.columns:
-        transaction_data = st.session_state.features_df.loc[selected_index]
-        
-        # Display key fields
-        key_fields = ['transaction_id', 'amount', 'timestamp', 'sender_id', 'receiver_id', 
-                     'transaction_type', 'transaction_category', 'description']
-        
-        for field in key_fields:
-            if field in transaction_data:
-                st.write(f"**{field.replace('_', ' ').title()}:** {transaction_data[field]}")
+    # Try to get transaction details from features_df
+    if hasattr(st.session_state, 'features_df') and st.session_state.features_df is not None:
+        try:
+            transaction_data = st.session_state.features_df.loc[selected_index]
+            
+            # Display key fields
+            key_fields = ['transaction_id', 'amount', 'timestamp', 'sender_id', 'receiver_id', 
+                         'transaction_type', 'transaction_category', 'description']
+            
+            for field in key_fields:
+                if field in transaction_data:
+                    st.write(f"**{field.replace('_', ' ').title()}:** {transaction_data[field]}")
+        except Exception as e:
+            st.warning(f"Could not retrieve transaction details: {str(e)}")
     
     # Risk score
     risk_score = risk_scores.loc[selected_index, 'risk_score']

@@ -46,22 +46,16 @@ class RuleEngine:
         else:
             self._load_default_rules()
     
-    def _load_config(self, config_path=None):
+    def _load_config(self, config_path):
         """
-        Load configuration from YAML file"""
+        Load configuration from YAML file
+        
+        Args:
+            config_path (str): Path to configuration file
+        """
         try:
-            if config_path and os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-            else:
-                # Use default config path
-                config_path = 'config/rule_engine_config.yml'
-                if os.path.exists(config_path):
-                    with open(config_path, 'r') as f:
-                        config = yaml.safe_load(f)
-                else:
-                    config = {'rules': {}}
-                        
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
             
             # Load rules
             if 'rules' in config:

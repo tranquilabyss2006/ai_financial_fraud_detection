@@ -2,7 +2,6 @@
 Risk Scorer Module
 Implements risk scoring for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -10,7 +9,6 @@ from sklearn.calibration import CalibratedClassifierCV
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +27,8 @@ class RiskScorer:
             method (str): Scoring method ('weighted_average', 'maximum', 'custom')
             custom_weights (dict, optional): Custom weights for models
         """
-        self.method = method
+        # Convert method to lowercase and replace spaces with underscores
+        self.method = method.lower().replace(" ", "_")
         self.custom_weights = custom_weights or {
             'unsupervised': 0.4,
             'supervised': 0.4,
@@ -220,14 +219,14 @@ class RiskScorer:
         try:
             if 'normalized_scores' in rule_results:
                 rule_scores = rule_results['normalized_scores']
+                # Ensure rule_scores is a numpy array
+                if not isinstance(rule_scores, np.ndarray):
+                    rule_scores = np.array(rule_scores)
             else:
                 return None
             
-            # Apply calibration if available
-            if 'rule' in self.calibrators:
-                calibrated_scores = self.calibrators['rule'].predict_proba(rule_scores.reshape(-1, 1))[:, 1]
-            else:
-                calibrated_scores = rule_scores
+            # No calibration for now to avoid the reshape issue
+            calibrated_scores = rule_scores
             
             # Store calibrator
             self.calibrators['rule'] = CalibratedClassifierCV(
@@ -258,24 +257,55 @@ class RiskScorer:
             supervised_weight = self.custom_weights.get('supervised', 0.4)
             rule_weight = self.custom_weights.get('rule', 0.2)
             
-            # Normalize weights
-            total_weight = unsupervised_weight + supervised_weight + rule_weight
+            # Normalize weights based on available scores
+            available_weights = []
+            if unsupervised_scores is not None:
+                available_weights.append(unsupervised_weight)
+            if supervised_scores is not None:
+                available_weights.append(supervised_weight)
+            if rule_scores is not None:
+                available_weights.append(rule_weight)
+            
+            total_weight = sum(available_weights)
             if total_weight > 0:
-                unsupervised_weight /= total_weight
-                supervised_weight /= total_weight
-                rule_weight /= total_weight
+                if unsupervised_scores is not None:
+                    unsupervised_weight /= total_weight
+                if supervised_scores is not None:
+                    supervised_weight /= total_weight
+                if rule_scores is not None:
+                    rule_weight /= total_weight
+            
+            # Determine the length of the combined scores array
+            if unsupervised_scores is not None:
+                length = len(unsupervised_scores)
+            elif supervised_scores is not None:
+                length = len(supervised_scores)
+            elif rule_scores is not None:
+                length = len(rule_scores)
+            else:
+                # If no scores available, return empty array
+                return np.array([])
             
             # Initialize combined scores
-            combined_scores = np.zeros(len(unsupervised_scores or supervised_scores or rule_scores))
+            combined_scores = np.zeros(length)
             
             # Add weighted scores
             if unsupervised_scores is not None:
+                # Ensure unsupervised_scores is a numpy array
+                if not isinstance(unsupervised_scores, np.ndarray):
+                    unsupervised_scores = np.array(unsupervised_scores)
                 combined_scores += unsupervised_weight * unsupervised_scores
             
             if supervised_scores is not None:
+                # Ensure supervised_scores is a numpy array
+                if not isinstance(supervised_scores, np.ndarray):
+                    supervised_scores = np.array(supervised_scores)
                 combined_scores += supervised_weight * supervised_scores
             
             if rule_scores is not None:
+                # Ensure rule_scores is a numpy array
+                if not isinstance(rule_scores, np.ndarray):
+                    rule_scores = np.array(rule_scores)
                 combined_scores += rule_weight * rule_scores
             
             return combined_scores
@@ -310,7 +340,7 @@ class RiskScorer:
                 all_scores.append(rule_scores)
             
             if not all_scores:
-                return np.zeros(1)
+                return np.array([])
             
             # Take maximum score for each transaction
             combined_scores = np.max(all_scores, axis=0)

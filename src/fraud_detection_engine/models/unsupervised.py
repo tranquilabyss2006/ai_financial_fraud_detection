@@ -2,7 +2,6 @@
 Unsupervised Models Module
 Implements unsupervised learning models for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
@@ -11,7 +10,8 @@ from sklearn.svm import OneClassSVM
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import silhouette_score
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -19,7 +19,6 @@ from tensorflow.keras.callbacks import EarlyStopping
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +42,7 @@ class UnsupervisedModels:
         self.models = {}
         self.feature_names = {}
         self.scalers = {}
+        self.imputers = {}
         self.fitted = False
         
     def run_models(self, df):
@@ -64,25 +64,17 @@ class UnsupervisedModels:
                 return {}
             
             # Prepare data
-            X = df[numeric_cols].fillna(0)
-
-            # Add this BEFORE scaling:
-            X = data.values.astype(np.float64)
-
-            # Replace infinite values with NaNs:
-            X[np.isinf(X)] = np.nan
-
-            # Impute missing values (including the NaNs we just created):
-            from sklearn.impute import SimpleImputer
-            imputer = SimpleImputer(strategy='mean')
-            X = imputer.fit_transform(X)
+            X = df[numeric_cols].copy()
+            
+            # Clean the data - handle infinity and very large values
+            X = self._clean_data(X)
             
             # Scale data
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
+            X_scaled, scaler, imputer = self._scale_data(X)
             
-            # Store scaler
+            # Store scaler and imputer
             self.scalers['global'] = scaler
+            self.imputers['global'] = imputer
             
             # Run different models
             results = {}
@@ -92,13 +84,14 @@ class UnsupervisedModels:
                 if_model = IsolationForest(
                     contamination=self.contamination,
                     random_state=self.random_state,
-                    n_jobs=-1
+                    n_jobs=-1,
+                    max_samples='auto'
                 )
                 if_predictions = if_model.fit_predict(X_scaled)
                 if_scores = if_model.decision_function(X_scaled)
                 
                 # Normalize scores to 0-1 range
-                if_scores_normalized = (if_scores - if_scores.min()) / (if_scores.max() - if_scores.min())
+                if_scores_normalized = self._normalize_scores(if_scores)
                 
                 results['isolation_forest'] = {
                     'predictions': if_predictions,
@@ -118,7 +111,7 @@ class UnsupervisedModels:
             try:
                 lof_model = LocalOutlierFactor(
                     contamination=self.contamination,
-                    n_neighbors=20,
+                    n_neighbors=min(20, len(X_scaled) - 1),  # Ensure n_neighbors < n_samples
                     novelty=True,
                     n_jobs=-1
                 )
@@ -126,7 +119,7 @@ class UnsupervisedModels:
                 lof_scores = lof_model.decision_function(X_scaled)
                 
                 # Normalize scores to 0-1 range
-                lof_scores_normalized = (lof_scores - lof_scores.min()) / (lof_scores.max() - lof_scores.min())
+                lof_scores_normalized = self._normalize_scores(lof_scores)
                 
                 results['local_outlier_factor'] = {
                     'predictions': lof_predictions,
@@ -153,7 +146,7 @@ class UnsupervisedModels:
                 ocsvm_scores = ocsvm_model.decision_function(X_scaled)
                 
                 # Normalize scores to 0-1 range
-                ocsvm_scores_normalized = (ocsvm_scores - ocsvm_scores.min()) / (ocsvm_scores.max() - ocsvm_scores.min())
+                ocsvm_scores_normalized = self._normalize_scores(ocsvm_scores)
                 
                 results['one_class_svm'] = {
                     'predictions': ocsvm_predictions,
@@ -171,30 +164,59 @@ class UnsupervisedModels:
             
             # DBSCAN Clustering
             try:
+                # Use a subset of data for DBSCAN if it's too large
+                if len(X_scaled) > 10000:
+                    X_subset = X_scaled[np.random.choice(len(X_scaled), 10000, replace=False)]
+                else:
+                    X_subset = X_scaled
+                
                 dbscan_model = DBSCAN(eps=0.5, min_samples=5)
-                dbscan_labels = dbscan_model.fit_predict(X_scaled)
+                dbscan_labels = dbscan_model.fit_predict(X_subset)
                 
                 # Convert to outlier predictions (-1 is outlier in DBSCAN)
                 dbscan_predictions = np.where(dbscan_labels == -1, -1, 1)
                 
                 # Calculate distance to nearest core point as anomaly score
-                dbscan_scores = np.zeros(len(X_scaled))
-                for i in range(len(X_scaled)):
+                dbscan_scores = np.zeros(len(X_subset))
+                for i in range(len(X_subset)):
                     if dbscan_labels[i] == -1:  # Outlier
                         # Find distance to nearest core point
                         core_points = np.where(dbscan_labels != -1)[0]
                         if len(core_points) > 0:
-                            distances = np.linalg.norm(X_scaled[i] - X_scaled[core_points], axis=1)
+                            distances = np.linalg.norm(X_subset[i] - X_subset[core_points], axis=1)
                             dbscan_scores[i] = distances.min()
                         else:
-                            dbscan_scores[i] = np.max(np.linalg.norm(X_scaled - X_scaled.mean(axis=0), axis=1))
+                            dbscan_scores[i] = np.max(np.linalg.norm(X_subset - X_subset.mean(axis=0), axis=1))
                 
                 # Normalize scores to 0-1 range
-                dbscan_scores_normalized = (dbscan_scores - dbscan_scores.min()) / (dbscan_scores.max() - dbscan_scores.min())
+                dbscan_scores_normalized = self._normalize_scores(dbscan_scores)
+                
+                # For the full dataset, use the model to predict
+                if len(X_scaled) > 10000:
+                    full_predictions = dbscan_model.fit_predict(X_scaled)
+                    full_predictions = np.where(full_predictions == -1, -1, 1)
+                    
+                    # Calculate scores for full dataset
+                    full_scores = np.zeros(len(X_scaled))
+                    for i in range(len(X_scaled)):
+                        if full_predictions[i] == -1:  # Outlier
+                            # Find distance to nearest core point
+                            core_points = np.where(full_predictions != -1)[0]
+                            if len(core_points) > 0:
+                                distances = np.linalg.norm(X_scaled[i] - X_scaled[core_points], axis=1)
+                                full_scores[i] = distances.min()
+                            else:
+                                full_scores[i] = np.max(np.linalg.norm(X_scaled - X_scaled.mean(axis=0), axis=1))
+                    
+                    # Normalize scores
+                    full_scores_normalized = self._normalize_scores(full_scores)
+                else:
+                    full_predictions = dbscan_predictions
+                    full_scores_normalized = dbscan_scores_normalized
                 
                 results['dbscan'] = {
-                    'predictions': dbscan_predictions,
-                    'scores': dbscan_scores_normalized,
+                    'predictions': full_predictions,
+                    'scores': full_scores_normalized,
                     'model': dbscan_model,
                     'feature_names': numeric_cols
                 }
@@ -229,7 +251,7 @@ class UnsupervisedModels:
                 min_distances = distances.min(axis=1)
                 
                 # Normalize scores to 0-1 range
-                kmeans_scores_normalized = (min_distances - min_distances.min()) / (min_distances.max() - min_distances.min())
+                kmeans_scores_normalized = self._normalize_scores(min_distances)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(kmeans_scores_normalized, (1 - self.contamination) * 100)
@@ -275,8 +297,12 @@ class UnsupervisedModels:
                 reconstructions = autoencoder.predict(X_scaled)
                 mse = np.mean(np.power(X_scaled - reconstructions, 2), axis=1)
                 
+                # Handle any infinity or NaN values in MSE
+                mse = np.nan_to_num(mse)
+                mse = np.clip(mse, 0, np.finfo(np.float64).max)  # Clip to valid range
+                
                 # Normalize scores to 0-1 range
-                mse_normalized = (mse - mse.min()) / (mse.max() - mse.min())
+                mse_normalized = self._normalize_scores(mse)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(mse_normalized, (1 - self.contamination) * 100)
@@ -307,8 +333,12 @@ class UnsupervisedModels:
                 X_reconstructed = pca.inverse_transform(pca_transformed)
                 pca_errors = np.mean(np.power(X_scaled - X_reconstructed, 2), axis=1)
                 
+                # Handle any infinity or NaN values in errors
+                pca_errors = np.nan_to_num(pca_errors)
+                pca_errors = np.clip(pca_errors, 0, np.finfo(np.float64).max)  # Clip to valid range
+                
                 # Normalize scores to 0-1 range
-                pca_errors_normalized = (pca_errors - pca_errors.min()) / (pca_errors.max() - pca_errors.min())
+                pca_errors_normalized = self._normalize_scores(pca_errors)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(pca_errors_normalized, (1 - self.contamination) * 100)
@@ -335,6 +365,103 @@ class UnsupervisedModels:
         except Exception as e:
             logger.error(f"Error running unsupervised models: {str(e)}")
             raise
+    
+    def _clean_data(self, X):
+        """
+        Clean data by handling infinity, NaN, and extreme values
+        
+        Args:
+            X (DataFrame): Input data
+            
+        Returns:
+            DataFrame: Cleaned data
+        """
+        try:
+            # Replace infinity with NaN
+            X = X.replace([np.inf, -np.inf], np.nan)
+            
+            # Replace extremely large values with a more reasonable maximum
+            for col in X.columns:
+                if X[col].dtype in ['float64', 'int64']:
+                    # Calculate 99th percentile as a reasonable maximum
+                    percentile_99 = np.nanpercentile(X[col], 99)
+                    if not np.isnan(percentile_99):
+                        # Cap values at 10 times the 99th percentile
+                        max_val = percentile_99 * 10
+                        X[col] = np.where(X[col] > max_val, max_val, X[col])
+                        
+                        # Similarly, handle extremely negative values
+                        percentile_1 = np.nanpercentile(X[col], 1)
+                        if not np.isnan(percentile_1):
+                            min_val = percentile_1 * 10
+                            X[col] = np.where(X[col] < min_val, min_val, X[col])
+            
+            return X
+            
+        except Exception as e:
+            logger.error(f"Error cleaning data: {str(e)}")
+            return X
+    
+    def _scale_data(self, X):
+        """
+        Scale data using RobustScaler (more resistant to outliers)
+        
+        Args:
+            X (DataFrame): Input data
+            
+        Returns:
+            tuple: (scaled data, scaler, imputer)
+        """
+        try:
+            # First impute missing values
+            imputer = SimpleImputer(strategy='median')
+            X_imputed = imputer.fit_transform(X)
+            
+            # Use RobustScaler instead of StandardScaler to handle outliers better
+            scaler = RobustScaler()
+            X_scaled = scaler.fit_transform(X_imputed)
+            
+            # Check for any remaining infinity or NaN values
+            X_scaled = np.nan_to_num(X_scaled)
+            X_scaled = np.clip(X_scaled, -1e10, 1e10)  # Clip to reasonable range
+            
+            return X_scaled, scaler, imputer
+            
+        except Exception as e:
+            logger.error(f"Error scaling data: {str(e)}")
+            # Fallback to simple normalization
+            X_normalized = (X - X.min()) / (X.max() - X.min())
+            return X_normalized.values, None, None
+    
+    def _normalize_scores(self, scores):
+        """
+        Normalize scores to 0-1 range
+        
+        Args:
+            scores (array): Input scores
+            
+        Returns:
+            array: Normalized scores
+        """
+        try:
+            # Handle NaN and infinity
+            scores = np.nan_to_num(scores)
+            scores = np.clip(scores, -1e10, 1e10)  # Clip to reasonable range
+            
+            # Min-max normalization
+            min_score = scores.min()
+            max_score = scores.max()
+            
+            if max_score > min_score:
+                normalized_scores = (scores - min_score) / (max_score - min_score)
+            else:
+                normalized_scores = np.zeros_like(scores)
+            
+            return normalized_scores
+            
+        except Exception as e:
+            logger.error(f"Error normalizing scores: {str(e)}")
+            return np.zeros_like(scores)
     
     def _build_autoencoder(self, input_dim, encoding_dim):
         """
@@ -391,14 +518,20 @@ class UnsupervisedModels:
             feature_names = self.feature_names[model_name]
             
             # Prepare data
-            X = df[feature_names].fillna(0)
+            X = df[feature_names].copy()
             
-            # Scale data
-            if 'global' in self.scalers:
-                X_scaled = self.scalers['global'].transform(X)
+            # Clean the data
+            X = self._clean_data(X)
+            
+            # Scale data using fitted scaler and imputer
+            if 'global' in self.scalers and 'global' in self.imputers:
+                X_imputed = self.imputers['global'].transform(X)
+                X_scaled = self.scalers['global'].transform(X_imputed)
             else:
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X)
+                # Fallback to simple normalization
+                X_scaled = (X - X.min()) / (X.max() - X.min())
+                X_scaled = np.nan_to_num(X_scaled)
+                X_scaled = np.clip(X_scaled, -1e10, 1e10)
             
             # Get model
             model = self.models[model_name]
@@ -408,19 +541,19 @@ class UnsupervisedModels:
                 predictions = model.predict(X_scaled)
                 scores = model.decision_function(X_scaled)
                 # Normalize scores to 0-1 range
-                scores_normalized = (scores - scores.min()) / (scores.max() - scores.min())
+                scores_normalized = self._normalize_scores(scores)
                 
             elif model_name == 'local_outlier_factor':
                 predictions = model.predict(X_scaled)
                 scores = model.decision_function(X_scaled)
                 # Normalize scores to 0-1 range
-                scores_normalized = (scores - scores.min()) / (scores.max() - scores.min())
+                scores_normalized = self._normalize_scores(scores)
                 
             elif model_name == 'one_class_svm':
                 predictions = model.predict(X_scaled)
                 scores = model.decision_function(X_scaled)
                 # Normalize scores to 0-1 range
-                scores_normalized = (scores - scores.min()) / (scores.max() - scores.min())
+                scores_normalized = self._normalize_scores(scores)
                 
             elif model_name == 'dbscan':
                 predictions = model.fit_predict(X_scaled)
@@ -440,7 +573,7 @@ class UnsupervisedModels:
                             scores[i] = np.max(np.linalg.norm(X_scaled - X_scaled.mean(axis=0), axis=1))
                 
                 # Normalize scores to 0-1 range
-                scores_normalized = (scores - scores.min()) / (scores.max() - scores.min())
+                scores_normalized = self._normalize_scores(scores)
                 
             elif model_name == 'kmeans':
                 # Transform data
@@ -448,7 +581,7 @@ class UnsupervisedModels:
                 min_distances = distances.min(axis=1)
                 
                 # Normalize scores to 0-1 range
-                scores_normalized = (min_distances - min_distances.min()) / (min_distances.max() - min_distances.min())
+                scores_normalized = self._normalize_scores(min_distances)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(scores_normalized, (1 - self.contamination) * 100)
@@ -459,8 +592,12 @@ class UnsupervisedModels:
                 reconstructions = model.predict(X_scaled)
                 mse = np.mean(np.power(X_scaled - reconstructions, 2), axis=1)
                 
+                # Handle any infinity or NaN values in MSE
+                mse = np.nan_to_num(mse)
+                mse = np.clip(mse, 0, np.finfo(np.float64).max)
+                
                 # Normalize scores to 0-1 range
-                scores_normalized = (mse - mse.min()) / (mse.max() - mse.min())
+                scores_normalized = self._normalize_scores(mse)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(scores_normalized, (1 - self.contamination) * 100)
@@ -474,8 +611,12 @@ class UnsupervisedModels:
                 X_reconstructed = model.inverse_transform(pca_transformed)
                 mse = np.mean(np.power(X_scaled - X_reconstructed, 2), axis=1)
                 
+                # Handle any infinity or NaN values in errors
+                mse = np.nan_to_num(mse)
+                mse = np.clip(mse, 0, np.finfo(np.float64).max)
+                
                 # Normalize scores to 0-1 range
-                scores_normalized = (mse - mse.min()) / (mse.max() - mse.min())
+                scores_normalized = self._normalize_scores(mse)
                 
                 # Convert to outlier predictions (top contamination% are outliers)
                 threshold = np.percentile(scores_normalized, (1 - self.contamination) * 100)

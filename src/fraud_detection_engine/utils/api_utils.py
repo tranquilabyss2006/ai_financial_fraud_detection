@@ -2,14 +2,12 @@
 API Utilities Module
 Handles checking API availability and providing demo data
 """
-
 import yaml
 import os
 import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-
 logger = logging.getLogger(__name__)
 
 def is_api_available(service_name):
@@ -23,7 +21,10 @@ def is_api_available(service_name):
         bool: True if API is available, False otherwise
     """
     try:
-        config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'api_keys.yml')
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, '..', '..', 'config', 'api_keys.yml')
+        
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
