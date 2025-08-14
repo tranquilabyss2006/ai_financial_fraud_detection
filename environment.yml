@@ -5,6 +5,7 @@ channels:
 dependencies:
   - python=3.9
   - pip>=22.0.0
+  - voila
   
   # Core Data Processing
   - pandas>=1.5.0

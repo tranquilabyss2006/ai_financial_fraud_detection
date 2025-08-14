@@ -13,15 +13,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import yaml
-from io import BytesIO
+from io import BytesIO, StringIO
 import logging
 import tempfile
 import chardet
 import traceback
-
+from typing import Optional
 # Add src to path to import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 from fraud_detection_engine.ingestion.data_loader import DataLoader
 from fraud_detection_engine.ingestion.column_mapper import ColumnMapper
 from fraud_detection_engine.features.statistical_features import StatisticalFeatures
@@ -35,11 +34,9 @@ from fraud_detection_engine.analysis.risk_scorer import RiskScorer
 from fraud_detection_engine.analysis.explainability import Explainability
 from fraud_detection_engine.reporting.pdf_generator import PDFGenerator
 from fraud_detection_engine.utils.api_utils import is_api_available
-
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 # Set page configuration
 st.set_page_config(
     page_title="Financial Fraud Detection System",
@@ -47,7 +44,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
 # Load configuration
 @st.cache_resource
 def load_config():
@@ -76,9 +72,7 @@ def load_config():
             'api_keys': {}
         }
     return config
-
 config = load_config()
-
 # Initialize session state variables
 if 'data' not in st.session_state:
     st.session_state.data = None
@@ -98,7 +92,6 @@ if 'original_data' not in st.session_state:
     st.session_state.original_data = None
 if 'features_df' not in st.session_state:
     st.session_state.features_df = None
-
 # Sidebar
 def render_sidebar():
     """Render the sidebar with navigation and controls"""
@@ -161,7 +154,65 @@ def render_sidebar():
     """)
     
     return page
-
+# Helper function to detect file encoding
+def detect_file_encoding(file_content):
+    """Detect the encoding of file content"""
+    try:
+        result = chardet.detect(file_content)
+        return result['encoding']
+    except Exception as e:
+        logger.error(f"Error detecting file encoding: {str(e)}")
+        return None
+# Helper function to read CSV with multiple encoding attempts
+def read_csv_with_encodings(file_content, filename):
+    """Read CSV file trying multiple encodings"""
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+    
+    # First try with detected encoding
+    detected_encoding = detect_file_encoding(file_content)
+    if detected_encoding:
+        try:
+            st.write(f"Trying detected encoding: {detected_encoding}")
+            return pd.read_csv(StringIO(file_content.decode(detected_encoding)))
+        except Exception as e:
+            st.warning(f"Failed with detected encoding {detected_encoding}: {str(e)}")
+    
+    # Try common encodings
+    for encoding in encodings:
+        try:
+            st.write(f"Trying encoding: {encoding}")
+            return pd.read_csv(StringIO(file_content.decode(encoding)))
+        except UnicodeDecodeError:
+            st.warning(f"Failed with {encoding} encoding: Unicode decode error")
+        except Exception as e:
+            st.warning(f"Failed with {encoding} encoding: {str(e)}")
+    
+    return None
+# Helper function to read Excel with multiple engines
+def read_excel_with_engines(file_content, filename):
+    """Read Excel file trying multiple engines"""
+    # Try default engine first
+    try:
+        st.write("Trying default Excel engine")
+        return pd.read_excel(BytesIO(file_content))
+    except Exception as e:
+        st.warning(f"Failed with default engine: {str(e)}")
+    
+    # Try specific engines based on file extension
+    if filename.endswith('.xlsx'):
+        try:
+            st.write("Trying openpyxl engine")
+            return pd.read_excel(BytesIO(file_content), engine='openpyxl')
+        except Exception as e:
+            st.warning(f"Failed with openpyxl: {str(e)}")
+    elif filename.endswith('.xls'):
+        try:
+            st.write("Trying xlrd engine")
+            return pd.read_excel(BytesIO(file_content), engine='xlrd')
+        except Exception as e:
+            st.warning(f"Failed with xlrd: {str(e)}")
+    
+    return None
 # Data Upload Page
 def render_data_upload():
     """Render the data upload page"""
@@ -170,7 +221,7 @@ def render_data_upload():
     Upload your transaction data for analysis. The system supports CSV and Excel files.
     """)
     
-    # Add debug information
+    # Debug information
     st.write("### Debug Information")
     st.write(f"Current working directory: {os.getcwd()}")
     st.write(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
@@ -192,69 +243,58 @@ def render_data_upload():
     
     if uploaded_file is not None:
         try:
-            # Process the file based on its type
+            # Read file content directly
+            file_content = uploaded_file.read()
+            
+            # Read the file based on its type
+            df = None
+            
             if uploaded_file.name.endswith('.csv'):
-                # For CSV files, try multiple encodings
-                encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
-                df = None
-                
-                # First, try to detect encoding with chardet
-                try:
-                    raw_data = uploaded_file.read()
-                    result = chardet.detect(raw_data)
-                    detected_encoding = result['encoding']
-                    confidence = result['confidence']
-                    
-                    st.write(f"Detected encoding: {detected_encoding} with confidence {confidence:.2f}")
-                    
-                    # Reset file pointer
-                    uploaded_file.seek(0)
-                    
-                    # Try with detected encoding first
-                    try:
-                        df = pd.read_csv(uploaded_file, encoding=detected_encoding)
-                        st.success(f"Successfully read CSV with {detected_encoding} encoding")
-                    except UnicodeDecodeError:
-                        st.warning(f"Failed with detected encoding: {detected_encoding}")
-                        # Try other encodings
-                        for encoding in encodings:
-                            if encoding != detected_encoding:  # Skip the one we already tried
-                                try:
-                                    # Reset file pointer
-                                    uploaded_file.seek(0)
-                                    df = pd.read_csv(uploaded_file, encoding=encoding)
-                                    st.success(f"Successfully read CSV with {encoding} encoding")
-                                    break
-                                except UnicodeDecodeError:
-                                    st.warning(f"Failed with {encoding} encoding: Unicode decode error")
-                                except Exception as e:
-                                    st.warning(f"Failed with {encoding} encoding: {str(e)}")
-                except Exception as e:
-                    st.warning(f"Error detecting encoding: {str(e)}")
-                    # Try common encodings as fallback
-                    for encoding in encodings:
-                        try:
-                            # Reset file pointer
-                            uploaded_file.seek(0)
-                            df = pd.read_csv(uploaded_file, encoding=encoding)
-                            st.success(f"Successfully read CSV with {encoding} encoding")
-                            break
-                        except Exception as e:
-                            st.warning(f"Failed with {encoding} encoding: {str(e)}")
+                st.write("### Processing CSV file")
+                df = read_csv_with_encodings(file_content, uploaded_file.name)
                 
                 if df is None:
                     st.error("Could not read CSV file with any encoding")
-                    return
+                    
+                    # Show file content for debugging
+                    st.write("### File Content (first 1000 bytes)")
+                    try:
+                        st.write(file_content[:1000])
+                    except Exception as e:
+                        st.error(f"Could not display file content: {str(e)}")
+                    
+                    # Try to create a simple CSV from the content
+                    st.write("### Attempting to create CSV from content")
+                    try:
+                        # Try different encodings directly
+                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                            try:
+                                content_str = file_content.decode(encoding, errors='ignore')
+                                df = pd.read_csv(StringIO(content_str))
+                                st.success(f"Successfully read CSV with {encoding} encoding")
+                                break
+                            except:
+                                continue
+                    except Exception as e:
+                        st.error(f"Failed to create CSV from content: {str(e)}")
+                
+            elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                st.write("### Processing Excel file")
+                df = read_excel_with_engines(file_content, uploaded_file.name)
+                
+                if df is None:
+                    st.error("Could not read Excel file with any engine")
             else:
-                # For Excel files
-                try:
-                    df = pd.read_excel(uploaded_file)
-                    st.success("Successfully read Excel file")
-                except Exception as e:
-                    st.error(f"Error reading Excel file: {str(e)}")
-                    st.write("### Error Details")
-                    st.exception(e)
-                    return
+                st.error(f"Unsupported file type: {uploaded_file.name}")
+            
+            # Validate the dataframe
+            if df is None:
+                st.error("Failed to read the uploaded file")
+                return
+            
+            if df.empty:
+                st.error("The uploaded file appears to be empty")
+                return
             
             # Display data info
             st.success(f"File uploaded successfully! Shape: {df.shape}")
@@ -279,13 +319,23 @@ def render_data_upload():
             
             # Basic statistics
             st.write("### Basic Statistics")
-            st.dataframe(df.describe(include='all'))
-            
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                st.dataframe(df[numeric_cols].describe())
+            else:
+                st.info("No numeric columns found for statistics")
+                
+            # Check file structure
+            st.write("### File Structure Check")
+            if len(df.columns) > 0:
+                st.write(f"Found {len(df.columns)} columns")
+                st.write("Columns:", list(df.columns))
+            else:
+                st.error("No columns found in the file")
+                
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
             st.write("### Error Details")
-            st.exception(e)
-            st.write("### Full Traceback")
             st.text(traceback.format_exc())
     
     # Sample data option
@@ -294,36 +344,55 @@ def render_data_upload():
     
     if st.button("Load Sample Data"):
         try:
-            # Get the directory where this script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            sample_path = os.path.join(script_dir, '..', 'data', 'sample_transactions.csv')
-            st.write(f"Looking for sample data at: {sample_path}")
+            # Look for sample data in multiple locations
+            possible_paths = [
+                os.path.join('..', 'data', 'sample_transactions.csv'),
+                os.path.join('data', 'sample_transactions.csv'),
+                'sample_transactions.csv'
+            ]
             
-            if os.path.exists(sample_path):
+            sample_path = None
+            for path in possible_paths:
+                st.write(f"Checking path: {path}")
+                if os.path.exists(path):
+                    sample_path = path
+                    st.write(f"Found sample data at: {path}")
+                    break
+            
+            if sample_path:
                 df = pd.read_csv(sample_path)
                 st.session_state.data = df
                 st.session_state.original_data = df.copy()
                 st.success(f"Sample data loaded! Shape: {df.shape}")
                 st.dataframe(df.head(10))
             else:
-                st.warning("Sample data file not found")
-                st.write("Creating sample data...")
+                st.warning("Sample data file not found, creating new sample...")
                 
                 # Create sample data if it doesn't exist
                 np.random.seed(42)
+                
+                # Create more realistic sample data
+                n_samples = 1000
+                start_date = datetime(2023, 1, 1)
+                
                 sample_data = pd.DataFrame({
-                    'transaction_id': range(1, 101),
-                    'timestamp': pd.date_range('2023-01-01', periods=100, freq='D'),
-                    'amount': np.random.lognormal(5, 1, 100),
-                    'sender_id': [f'sender_{i % 10}' for i in range(100)],
-                    'receiver_id': [f'receiver_{i % 10}' for i in range(100)],
-                    'currency': ['USD'] * 100,
-                    'description': [f'Transaction {i}' for i in range(1, 101)]
+                    'transaction_id': [f'TXN{i:06d}' for i in range(1, n_samples + 1)],
+                    'timestamp': [start_date + timedelta(days=np.random.randint(0, 365)) for _ in range(n_samples)],
+                    'amount': np.random.lognormal(8, 1.5, n_samples),  # More realistic amounts
+                    'sender_id': [f'CUST{np.random.randint(1, 201):03d}' for _ in range(n_samples)],
+                    'receiver_id': [f'CUST{np.random.randint(1, 201):03d}' for _ in range(n_samples)],
+                    'currency': ['USD'] * n_samples,
+                    'description': [f'Transaction type {np.random.choice(["PAYMENT", "TRANSFER", "PURCHASE", "WITHDRAWAL"])}' for _ in range(n_samples)],
+                    'transaction_type': np.random.choice(['debit', 'credit'], n_samples),
+                    'merchant_category': np.random.choice(['retail', 'services', 'utilities', 'finance'], n_samples)
                 })
                 
                 # Ensure data directory exists
-                data_dir = os.path.join(script_dir, '..', 'data')
-                os.makedirs(data_dir, exist_ok=True)
+                data_dir = os.path.join('..', 'data')
+                if not os.path.exists(data_dir):
+                    os.makedirs(data_dir)
+                
+                sample_path = os.path.join(data_dir, 'sample_transactions.csv')
                 sample_data.to_csv(sample_path, index=False)
                 st.write(f"Created sample data at: {sample_path}")
                 
@@ -336,8 +405,6 @@ def render_data_upload():
         except Exception as e:
             st.error(f"Error loading sample data: {str(e)}")
             st.write("### Error Details")
-            st.exception(e)
-            st.write("### Full Traceback")
             st.text(traceback.format_exc())
     
     # Additional troubleshooting section
@@ -359,22 +426,25 @@ def render_data_upload():
            - Try saving your CSV file with UTF-8 encoding
            - Use Excel to "Save As" and select "CSV UTF-8" format
            - Try converting your file to Excel format (.xlsx)
-           - Check if your CSV has a BOM (Byte Order Mark) and try saving without it
+           - Check if your CSV has special characters that might cause encoding issues
         
-        3. **Excel file issues**:
-           - Make sure your Excel file is not password protected
-           - Try saving as a different Excel format (.xlsx instead of .xls)
-           - Check if the file has any corrupted data or formatting
-        
-        4. **Permission issues**:
+        3. **Permission issues**:
            - Make sure the file is not read-only
            - Try moving the file to your desktop first
            - Check if your antivirus software is blocking the upload
+           - Try running the application with administrator privileges
         
-        5. **Browser compatibility**:
+        4. **Browser compatibility**:
            - Update your browser to the latest version
            - Try incognito/private browsing mode
            - Disable browser extensions temporarily
+           - Try a different browser
+        
+        5. **File format issues**:
+           - Make sure your CSV file has proper headers
+           - Check if your file has consistent formatting
+           - Try opening the file in Excel and re-saving it
+           - Remove any special characters from column names
         
         ### Alternative Methods:
         
@@ -382,9 +452,28 @@ def render_data_upload():
         1. Use the "Load Sample Data" button above
         2. Place your CSV file in the `data` folder with the name `sample_transactions.csv`
         3. Try converting your file to Excel format (.xlsx)
-        4. Try using a different device or browser
+        4. Use the text area below to paste your CSV data directly:
         """)
-
+        
+        # Add text area for direct CSV input
+        st.write("### Direct CSV Input")
+        csv_text = st.text_area("Paste your CSV data here:", height=200)
+        
+        if st.button("Load from Text"):
+            try:
+                if csv_text.strip():
+                    # Use StringIO to read the CSV data
+                    df = pd.read_csv(StringIO(csv_text))
+                    st.session_state.data = df
+                    st.session_state.original_data = df.copy()
+                    st.success(f"Data loaded from text! Shape: {df.shape}")
+                    st.dataframe(df.head(10))
+                else:
+                    st.warning("Please paste some CSV data")
+            except Exception as e:
+                st.error(f"Error loading data from text: {str(e)}")
+                st.write("### Error Details")
+                st.text(traceback.format_exc())
 # Column Mapping Page
 def render_column_mapping():
     """Render the column mapping page"""
@@ -467,7 +556,6 @@ def render_column_mapping():
             st.success("Data processed successfully! You can now configure analysis settings.")
         except Exception as e:
             st.error(f"Error processing data: {str(e)}")
-
 # Analysis Settings Page
 def render_analysis_settings():
     """Render the analysis settings page"""
@@ -635,7 +723,6 @@ def render_analysis_settings():
         
         st.session_state.settings = settings
         st.success("Settings saved! You can now run the detection analysis.")
-
 # Clean dataframe function
 def clean_dataframe(df):
     """
@@ -685,7 +772,6 @@ def clean_dataframe(df):
     except Exception as e:
         logger.error(f"Error cleaning DataFrame: {str(e)}")
         return df
-
 # Run Detection Page
 def render_run_detection():
     """Render the run detection page"""
@@ -866,11 +952,7 @@ def render_run_detection():
             
         except Exception as e:
             st.error(f"Error during analysis: {str(e)}")
-            st.write("### Error Details")
             st.exception(e)
-            st.write("### Full Traceback")
-            st.text(traceback.format_exc())
-
 # Results Dashboard Page
 def render_results_dashboard():
     """Render the results dashboard page"""
@@ -1150,7 +1232,6 @@ def render_results_dashboard():
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Timestamp data not available for time series analysis")
-
 # Explainability Page
 def render_explainability():
     """Render the explainability page"""
@@ -1435,7 +1516,6 @@ def render_explainability():
                 st.warning("Classification changed with the adjustments!")
             else:
                 st.info("Classification remains the same")
-
 # Reports Page
 def render_reports():
     """Render the reports page"""
@@ -1552,7 +1632,6 @@ def render_reports():
             except Exception as e:
                 st.error(f"Error generating report: {str(e)}")
                 st.exception(e)
-
 # Main function
 def main():
     """Main function to run the Streamlit app"""
@@ -1572,6 +1651,5 @@ def main():
         render_explainability()
     elif page == "Reports":
         render_reports()
-
 if __name__ == "__main__":
     main()
