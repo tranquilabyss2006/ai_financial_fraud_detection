@@ -62,3 +62,5 @@ pytest-cov>=3.0.0
 # Development
 jupyter>=1.0.0
 ipykernel>=6.15.0
+
+xlrd

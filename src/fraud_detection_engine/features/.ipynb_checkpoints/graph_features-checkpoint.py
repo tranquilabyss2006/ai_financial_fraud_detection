@@ -232,7 +232,7 @@ class GraphFeatures:
             else:
                 # Sample nodes for betweenness calculation
                 sample_nodes = list(self.graph.nodes())[:1000]
-                betweenness_centrality = nx.betweenness_centrality(self.graph, k=sample_nodes)
+                betweenness_centrality = nx.betweenness_centrality(self.graph, k=len(sample_nodes))
             
             # Map to dataframe
             if 'sender_id' in df.columns:
