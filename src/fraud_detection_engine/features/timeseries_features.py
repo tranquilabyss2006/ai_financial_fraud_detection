@@ -392,8 +392,8 @@ class TimeSeriesFeatures:
                         
                         # Time since last transaction for this sender
                         sender_transactions = df_sorted[
-                            (df_sorted['sender_id'] == sender) &
-                            (df_sorted['timestamp'] < row['timestamp'])
+                            (df_sorted['timestamp'] < row['timestamp']) &
+                            (df_sorted['sender_id'] == sender)
                         ]
                         
                         if len(sender_transactions) > 0:
@@ -447,8 +447,8 @@ class TimeSeriesFeatures:
                         
                         # Time since last transaction to this receiver
                         receiver_transactions = df_sorted[
-                            (df_sorted['receiver_id'] == receiver) &
-                            (df_sorted['timestamp'] < row['timestamp'])
+                            (df_sorted['timestamp'] < row['timestamp']) &
+                            (df_sorted['receiver_id'] == receiver)
                         ]
                         
                         if len(receiver_transactions) > 0:

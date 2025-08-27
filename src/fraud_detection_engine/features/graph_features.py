@@ -14,7 +14,6 @@ from typing import Dict, List, Tuple, Union
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 class GraphFeatures:
     """
     Class for extracting graph-based features from transaction data
@@ -913,22 +912,41 @@ class GraphFeatures:
             else:
                 self.scaler = MinMaxScaler()
             
-            # Handle graphs
+            # Handle graphs - deserialize each graph separately to handle errors individually
             try:
                 if 'graph' in state:
                     self.graph = pickle.loads(state['graph'])
+                else:
+                    self.graph = None
+            except Exception as e:
+                logger.warning(f"Error deserializing graph: {str(e)}")
+                self.graph = None
+            
+            try:
                 if 'sender_graph' in state:
                     self.sender_graph = pickle.loads(state['sender_graph'])
+                else:
+                    self.sender_graph = None
+            except Exception as e:
+                logger.warning(f"Error deserializing sender_graph: {str(e)}")
+                self.sender_graph = None
+            
+            try:
                 if 'receiver_graph' in state:
                     self.receiver_graph = pickle.loads(state['receiver_graph'])
+                else:
+                    self.receiver_graph = None
+            except Exception as e:
+                logger.warning(f"Error deserializing receiver_graph: {str(e)}")
+                self.receiver_graph = None
+            
+            try:
                 if 'bipartite_graph' in state:
                     self.bipartite_graph = pickle.loads(state['bipartite_graph'])
+                else:
+                    self.bipartite_graph = None
             except Exception as e:
-                logger.warning(f"Error deserializing graphs: {str(e)}")
-                # Set graphs to None if deserialization fails
-                self.graph = None
-                self.sender_graph = None
-                self.receiver_graph = None
+                logger.warning(f"Error deserializing bipartite_graph: {str(e)}")
                 self.bipartite_graph = None
             
             return True

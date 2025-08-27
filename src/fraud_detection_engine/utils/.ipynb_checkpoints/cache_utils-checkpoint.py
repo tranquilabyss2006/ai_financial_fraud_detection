@@ -25,15 +25,15 @@ class AnalysisCache:
     Class for handling caching of analysis state and results
     """
     
-    def __init__(self, cache_dir="../cache", max_cache_size=10, compression=True, cache_expiry_days=7):
+    def __init__(self, cache_dir="../cache", max_cache_size=0, compression=True, cache_expiry_days=0):
         """
         Initialize AnalysisCache
         
         Args:
             cache_dir (str): Directory to store cache files
-            max_cache_size (int): Maximum number of cache files to keep
+            max_cache_size (int): Maximum number of cache files to keep (0 for unlimited)
             compression (bool): Whether to compress cache files
-            cache_expiry_days (int): Number of days after which cache expires
+            cache_expiry_days (int): Number of days after which cache expires (0 for never)
         """
         self.cache_dir = Path(cache_dir)
         self.max_cache_size = max_cache_size
@@ -51,9 +51,11 @@ class AnalysisCache:
         # Initialize cache metadata
         self.cache_metadata = self._load_cache_metadata()
         
-        # Clean old cache files if needed
-        self._clean_old_cache()
-        self._clean_expired_cache()
+        # Clean old cache files if needed (only if limits are set)
+        if self.max_cache_size > 0:
+            self._clean_old_cache()
+        if self.cache_expiry_days > 0:
+            self._clean_expired_cache()
     
     def _load_cache_index(self):
         """Load the cache index from file"""
@@ -136,8 +138,13 @@ class AnalysisCache:
     def _clean_old_cache(self):
         """
         Clean old cache files if cache size exceeds limit
+        Only runs if max_cache_size > 0
         """
         try:
+            # Skip cleaning if max_cache_size is 0 (unlimited)
+            if self.max_cache_size <= 0:
+                return
+                
             cache_files = list(self.cache_dir.glob("cache_*.joblib"))
             
             if len(cache_files) > self.max_cache_size:
@@ -170,8 +177,13 @@ class AnalysisCache:
     def _clean_expired_cache(self):
         """
         Clean expired cache files based on expiry days
+        Only runs if cache_expiry_days > 0
         """
         try:
+            # Skip cleaning if cache_expiry_days is 0 (never expire)
+            if self.cache_expiry_days <= 0:
+                return
+                
             current_time = datetime.now()
             expired_files = []
             
@@ -497,7 +509,7 @@ class AnalysisCache:
                 cache_data = self.cache_index[f"cache_{file_hash}"]
                 if 'cached_at' in cache_data:
                     cache_time = datetime.fromisoformat(cache_data['cached_at'])
-                    if (datetime.now() - cache_time).days > self.cache_expiry_days:
+                    if (datetime.now() - cache_time).days > self.cache_expiry_days and self.cache_expiry_days > 0:
                         logger.info("Cache has expired")
                         return None
             
@@ -677,7 +689,7 @@ class AnalysisCache:
             cache_data = self.cache_index[cache_key]
             if 'cached_at' in cache_data:
                 cache_time = datetime.fromisoformat(cache_data['cached_at'])
-                if (datetime.now() - cache_time).days > self.cache_expiry_days:
+                if (datetime.now() - cache_time).days > self.cache_expiry_days and self.cache_expiry_days > 0:
                     return False
             
             return True

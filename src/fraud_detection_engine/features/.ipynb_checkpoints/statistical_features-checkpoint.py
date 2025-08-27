@@ -14,7 +14,6 @@ from typing import Dict, List, Tuple, Union
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 class StatisticalFeatures:
     """
     Class for extracting statistical features from transaction data
@@ -757,3 +756,64 @@ class StatisticalFeatures:
                     result_df[f'stat_pca_{i+1}'] = pca_components[:, i]
         
         return result_df
+    
+    def _serialize_for_cache(self):
+        """
+        Serialize statistical features state for caching
+        
+        Returns:
+            dict: Serialized state
+        """
+        try:
+            state = {
+                'config': self.config,
+                'feature_names': self.feature_names,
+                'fitted': self.fitted
+            }
+            
+            # Handle scaler
+            if self.scaler is not None:
+                state['scaler'] = self.scaler
+            
+            # Handle PCA
+            if self.pca is not None:
+                state['pca'] = self.pca
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error serializing statistical features state: {str(e)}")
+            return None
+    
+    def _deserialize_from_cache(self, state):
+        """
+        Deserialize statistical features state from cache
+        
+        Args:
+            state (dict): Serialized state
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            self.config = state.get('config', {})
+            self.feature_names = state.get('feature_names', [])
+            self.fitted = state.get('fitted', False)
+            
+            # Handle scaler
+            if 'scaler' in state:
+                self.scaler = state['scaler']
+            else:
+                self.scaler = StandardScaler()
+            
+            # Handle PCA
+            if 'pca' in state:
+                self.pca = state['pca']
+            else:
+                self.pca = None
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deserializing statistical features state: {str(e)}")
+            return False

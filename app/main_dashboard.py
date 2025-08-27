@@ -9,16 +9,19 @@ import os
 import sys
 import time
 import json
-import plotly.express as px
-import plotly.graph_objects as go
+import tempfile
+import logging
+import traceback
+import hashlib
+import zipfile
+import atexit
 from datetime import datetime, timedelta
 import yaml
 from io import BytesIO, StringIO
-import logging
-import tempfile
+import plotly.express as px
+import plotly.graph_objects as go
 import chardet
-import traceback
-from typing import Optional
+
 # Add src to path to import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from fraud_detection_engine.ingestion.data_loader import DataLoader
@@ -35,9 +38,11 @@ from fraud_detection_engine.analysis.explainability import Explainability
 from fraud_detection_engine.reporting.pdf_generator import PDFGenerator
 from fraud_detection_engine.utils.api_utils import is_api_available
 from fraud_detection_engine.utils.cache_utils import AnalysisCache
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 # Set page configuration
 st.set_page_config(
     page_title="Financial Fraud Detection System",
@@ -45,8 +50,182 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-# Initialize cache with compression enabled
-cache = AnalysisCache(compression=True)
+
+# Function to create a unique hash for the file content
+def get_file_hash(file_content):
+    """
+    Calculate SHA256 hash of file content for unique identification
+    
+    Args:
+        file_content (bytes): Content of the file
+        
+    Returns:
+        str: SHA256 hash string
+    """
+    return hashlib.sha256(file_content).hexdigest()
+
+# Function to ensure cache directory exists
+def ensure_cache_directory():
+    """Ensure cache directory exists"""
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        cache_dir = os.path.join(script_dir, "..", ".cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        return cache_dir
+    except Exception as e:
+        logger.error(f"Error creating cache directory: {str(e)}")
+        return None
+
+# Initialize cache with permanent settings
+cache_dir = ensure_cache_directory()
+if cache_dir:
+    cache = AnalysisCache(cache_dir=cache_dir, max_cache_size=0, compression=True, cache_expiry_days=0)
+else:
+    st.error("Failed to create cache directory. Caching will be disabled.")
+    cache = None
+
+# Function to check if cache is available
+def is_cache_available():
+    """Check if cache is available"""
+    return cache is not None
+
+# Function to safely execute cache operations
+def safe_cache_operation(operation, *args, **kwargs):
+    """
+    Safely execute cache operations with error handling
+    
+    Args:
+        operation: Function to execute
+        *args: Arguments for the function
+        **kwargs: Keyword arguments for the function
+        
+    Returns:
+        Result of the operation or None if failed
+    """
+    try:
+        return operation(*args, **kwargs)
+    except Exception as e:
+        logger.error(f"Cache operation failed: {str(e)}")
+        st.error(f"Cache operation failed: {str(e)}")
+        return None
+
+# Function to validate and load cache if available
+def validate_and_load_cache():
+    """Validate and load cache if available"""
+    if st.session_state.file_hash and is_cache_available() and cache.is_cache_valid(st.session_state.file_hash):
+        cache_step = cache.get_cache_step(st.session_state.file_hash)
+        if cache_step:
+            st.session_state.cache_available = True
+            st.session_state.cache_step_name = cache_step
+            return True
+    return False
+
+# Function to display cache file information
+def display_cache_info():
+    """Display detailed cache information"""
+    if st.session_state.file_hash and is_cache_available():
+        st.write("### Cache File Information")
+        
+        cache_path = cache._get_cache_path(st.session_state.file_hash)
+        metadata_path = cache._get_metadata_path(st.session_state.file_hash)
+        
+        if cache_path.exists():
+            st.write(f"Cache file: {cache_path}")
+            st.write(f"Cache size: {cache_path.stat().st_size / 1024:.2f} KB")
+            st.write(f"Last modified: {datetime.fromtimestamp(cache_path.stat().st_mtime)}")
+            
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    st.write("### Cache Metadata")
+                    st.json(metadata)
+                except Exception as e:
+                    st.warning(f"Could not read metadata: {str(e)}")
+        else:
+            st.write("No cache file exists for this file")
+
+# Function to render cache management options
+def render_cache_management():
+    """Render cache management options in the sidebar"""
+    st.sidebar.subheader("Cache Management")
+    
+    # Show cache statistics
+    if is_cache_available():
+        cache_stats = cache.get_cache_stats()
+        if cache_stats:
+            st.sidebar.write(f"Cache files: {cache_stats.get('total_files', 0)}")
+            st.sidebar.write(f"Cache size: {cache_stats.get('total_size_mb', 0):.2f} MB")
+            st.sidebar.write(f"Processing complete: {cache_stats.get('processing_complete_count', 0)}")
+        
+        # Clear cache button
+        if st.sidebar.button("Clear All Cache"):
+            if st.sidebar.checkbox("Confirm Clear Cache", key="confirm_clear"):
+                cache.clear_cache()
+                st.sidebar.success("All cache cleared")
+                st.session_state.cache_loaded = False
+                st.session_state.cache_available = False
+                st.session_state.cache_step_name = None
+                # Reset current step to Data Upload
+                st.session_state.current_step = "Data Upload"
+                # Reset analysis progress
+                st.session_state.analysis_progress = 0
+                st.session_state.analysis_status = "Ready"
+                st.session_state.analysis_start_time = None
+                st.session_state.analysis_elapsed_time = 0
+                st.session_state.analysis_log = []
+                st.experimental_rerun()
+        
+        # Export cache button
+        if st.sidebar.button("Export Cache"):
+            export_dir = cache.export_cache()
+            if export_dir:
+                st.sidebar.success(f"Cache exported to: {export_dir}")
+            else:
+                st.sidebar.error("Failed to export cache")
+        
+        # Import cache section
+        st.sidebar.subheader("Import Cache")
+        uploaded_cache = st.sidebar.file_uploader(
+            "Upload cache file",
+            type=['zip'],
+            help="Upload a zip file containing cache files"
+        )
+        
+        if uploaded_cache is not None:
+            # Create temporary directory for import
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save uploaded file
+                temp_path = os.path.join(temp_dir, uploaded_cache.name)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_cache.getvalue())
+                
+                # Extract zip file
+                with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+                
+                # Import cache
+                if cache.import_cache(temp_dir):
+                    st.sidebar.success("Cache imported successfully")
+                    st.experimental_rerun()
+                else:
+                    st.sidebar.error("Failed to import cache")
+
+# Function to cleanup cache on application exit
+def cleanup_cache():
+    """Cleanup cache on application exit"""
+    try:
+        if cache:
+            # Save any pending cache operations
+            cache._save_cache_index()
+            cache._save_cache_metadata()
+            logger.info("Cache cleanup completed")
+    except Exception as e:
+        logger.error(f"Error during cache cleanup: {str(e)}")
+
+# Register cleanup function
+atexit.register(cleanup_cache)
+
 # Load configuration
 @st.cache_resource
 def load_config():
@@ -75,7 +254,9 @@ def load_config():
             'api_keys': {}
         }
     return config
+
 config = load_config()
+
 # Initialize session state variables
 def init_session_state():
     """Initialize session state variables"""
@@ -155,54 +336,59 @@ def init_session_state():
 init_session_state()
 
 # Function to save current state to cache
-def save_state_to_cache(step_name):
+def save_state_to_cache(file_hash, session_state, step_name):
     """Save current analysis state to cache"""
+    if not is_cache_available():
+        logger.warning("Cache not available. Cannot save state.")
+        return
+        
     try:
-        if st.session_state.file_hash is None:
+        if file_hash is None:
+            logger.warning("No file hash available. Cannot save to cache.")
             return
         
         # Prepare state to save
         state = {
-            'current_step': st.session_state.current_step,
-            'data': st.session_state.data,
-            'processed_data': st.session_state.processed_data,
-            'features_df': st.session_state.features_df,
-            'risk_scores': st.session_state.risk_scores,
-            'explanations': st.session_state.explanations,
-            'model_results': st.session_state.model_results,
-            'column_mapping': st.session_state.column_mapping,
-            'settings': st.session_state.settings,
-            'processing_complete': st.session_state.processing_complete,
-            'original_data': st.session_state.original_data,
-            'feature_extractors': st.session_state.feature_extractors,
-            'analysis_progress': st.session_state.analysis_progress,
-            'analysis_status': st.session_state.analysis_status,
-            'analysis_start_time': st.session_state.analysis_start_time,
-            'analysis_elapsed_time': st.session_state.analysis_elapsed_time,
-            'analysis_log': st.session_state.analysis_log,
+            'current_step': session_state.current_step,
+            'data': session_state.data,
+            'processed_data': session_state.processed_data,
+            'features_df': session_state.features_df,
+            'risk_scores': session_state.risk_scores,
+            'explanations': session_state.explanations,
+            'model_results': session_state.model_results,
+            'column_mapping': session_state.column_mapping,
+            'settings': session_state.settings,
+            'processing_complete': session_state.processing_complete,
+            'original_data': session_state.original_data,
+            'feature_extractors': session_state.feature_extractors,
+            'analysis_progress': session_state.analysis_progress,
+            'analysis_status': session_state.analysis_status,
+            'analysis_start_time': session_state.analysis_start_time,
+            'analysis_elapsed_time': session_state.analysis_elapsed_time,
+            'analysis_log': session_state.analysis_log,
             # Cache metadata
-            'cache_metadata': st.session_state.cache_metadata,
+            'cache_metadata': session_state.cache_metadata,
             # Feature extraction states
-            'statistical_features': st.session_state.statistical_features,
-            'graph_features': st.session_state.graph_features,
-            'nlp_features': st.session_state.nlp_features,
-            'timeseries_features': st.session_state.timeseries_features,
+            'statistical_features': session_state.statistical_features,
+            'graph_features': session_state.graph_features,
+            'nlp_features': session_state.nlp_features,
+            'timeseries_features': session_state.timeseries_features,
             # Model states
-            'unsupervised_models': st.session_state.unsupervised_models,
-            'supervised_models': st.session_state.supervised_models,
-            'rule_engine': st.session_state.rule_engine
+            'unsupervised_models': session_state.unsupervised_models,
+            'supervised_models': session_state.supervised_models,
+            'rule_engine': session_state.rule_engine
         }
         
         # Save state to cache
-        cache.save_state(st.session_state.file_hash, state, step_name)
+        cache.save_state(file_hash, state, step_name)
         logger.info(f"Saved state to cache at step: {step_name}")
         
         # Update cache metadata
-        st.session_state.cache_metadata = {
+        session_state.cache_metadata = {
             'last_saved': datetime.now().isoformat(),
             'step_name': step_name,
-            'file_hash': st.session_state.file_hash,
-            'file_size': st.session_state.uploaded_file.size if st.session_state.uploaded_file else 0
+            'file_hash': file_hash,
+            'file_size': session_state.uploaded_file.size if session_state.uploaded_file else 0
         }
         
     except Exception as e:
@@ -210,11 +396,14 @@ def save_state_to_cache(step_name):
         st.error(f"Error saving state to cache: {str(e)}")
 
 # Function to load state from cache
-def load_state_from_cache(file_content_or_hash):
+def load_state_from_cache(file_hash):
     """Load analysis state from cache"""
+    if not is_cache_available():
+        return False
+        
     try:
         # Try to load state from cache
-        state = cache.load_state(file_content_or_hash)
+        state = cache.load_state(file_hash)
         
         if state is not None:
             # Restore session state
@@ -239,19 +428,25 @@ def load_state_from_cache(file_content_or_hash):
         return False
 
 # Function to get the current step from cache
-def get_cache_step(file_content_or_hash):
+def get_cache_step(file_hash):
     """Get the current step from cache"""
+    if not is_cache_available():
+        return None
+        
     try:
-        return cache.get_cache_step(file_content_or_hash)
+        return cache.get_cache_step(file_hash)
     except Exception as e:
         logger.error(f"Error getting cache step: {str(e)}")
         return None
 
 # Function to check if cache is valid
-def is_cache_valid(file_content_or_hash):
+def is_cache_valid(file_hash):
     """Check if cache exists and is valid for a file"""
+    if not is_cache_available():
+        return False
+        
     try:
-        return cache.is_cache_valid(file_content_or_hash)
+        return cache.is_cache_valid(file_hash)
     except Exception as e:
         logger.error(f"Error checking cache validity: {str(e)}")
         return False
@@ -309,8 +504,15 @@ def display_analysis_progress():
             st.sidebar.success("Analysis loaded from cache")
             if st.session_state.cache_step_name:
                 st.sidebar.info(f"Current step: {st.session_state.cache_step_name}")
+            # Show cache file info
+            if st.session_state.file_hash:
+                cache_file_path = cache._get_cache_path(st.session_state.file_hash)
+                st.sidebar.info(f"Cache file: {cache_file_path.name}")
         elif st.session_state.cache_available:
             st.sidebar.warning("Cache available but not loaded")
+            if st.session_state.file_hash:
+                cache_file_path = cache._get_cache_path(st.session_state.file_hash)
+                st.sidebar.info(f"Cache file: {cache_file_path.name}")
         else:
             st.sidebar.info("No cache available")
 
@@ -361,17 +563,6 @@ def render_sidebar():
     else:
         st.sidebar.info("Analysis pending")
     
-    # Cache status
-    st.sidebar.subheader("Cache Status")
-    if st.session_state.cache_loaded:
-        st.sidebar.success("Analysis loaded from cache")
-        if st.session_state.cache_step_name:
-            st.sidebar.info(f"Current step: {st.session_state.cache_step_name}")
-    elif st.session_state.cache_available:
-        st.sidebar.warning("Cache available but not loaded")
-    else:
-        st.sidebar.info("No cache available")
-    
     # API Status
     st.sidebar.subheader("API Status")
     api_status = {
@@ -396,42 +587,6 @@ def render_sidebar():
     if st.sidebar.button("Reload Config"):
         config = load_config()
         st.sidebar.success("Configuration reloaded")
-    
-    # Cache management
-    st.sidebar.subheader("Cache Management")
-    if st.sidebar.button("Clear Cache"):
-        cache.clear_cache()
-        st.sidebar.success("Cache cleared")
-        st.session_state.cache_loaded = False
-        st.session_state.cache_available = False
-        st.session_state.cache_step_name = None
-        # Reset current step to Data Upload
-        st.session_state.current_step = "Data Upload"
-        # Reset analysis progress
-        st.session_state.analysis_progress = 0
-        st.session_state.analysis_status = "Ready"
-        st.session_state.analysis_start_time = None
-        st.session_state.analysis_elapsed_time = 0
-        st.session_state.analysis_log = []
-    
-    # Show cache info
-    cache_info = cache.get_cache_info()
-    if cache_info:
-        st.sidebar.write(f"Cache files: {len(cache_info)}")
-    
-    # Auto-resume option
-    st.sidebar.subheader("Auto-Resume")
-    auto_resume = st.sidebar.checkbox("Enable Auto-Resume", value=st.session_state.auto_resume)
-    st.session_state.auto_resume = auto_resume
-    
-    if auto_resume:
-        st.sidebar.info("System will automatically resume from last step when the same file is uploaded")
-    
-    # About section
-    st.sidebar.subheader("About")
-    st.sidebar.info("""
-    This is a comprehensive financial fraud detection system that uses advanced machine learning, statistical analysis, and AI techniques to identify potentially fraudulent transactions.
-    """)
     
     return page
 
@@ -582,19 +737,17 @@ def render_data_upload():
         file_content = uploaded_file.read()
         uploaded_file.seek(0)  # Reset file pointer
         
-        # Check if this file has been processed before and to what step
-        cache_step = get_cache_step(file_content)
-        cache_valid = is_cache_valid(file_content)
+        # Calculate file hash for caching
+        st.session_state.file_hash = get_file_hash(file_content)
         
-        if cache_valid and cache_step:
-            st.success(f"This file has been processed before. Last completed step: {cache_step}")
-            st.session_state.cache_available = True
-            st.session_state.cache_step_name = cache_step
+        # Validate and load cache
+        if validate_and_load_cache():
+            st.success(f"This file has been processed before. Last completed step: {st.session_state.cache_step_name}")
             
             # Auto-resume if enabled
             if st.session_state.auto_resume:
                 st.info("Auto-resuming from last completed step...")
-                if load_state_from_cache(file_content):
+                if safe_cache_operation(load_state_from_cache, st.session_state.file_hash):
                     st.success("Analysis state loaded from cache!")
                     st.experimental_rerun()
                 else:
@@ -604,7 +757,7 @@ def render_data_upload():
             with col1:
                 if st.button("Load from Cache"):
                     log_analysis_progress("Loading analysis state from cache...")
-                    if load_state_from_cache(file_content):
+                    if safe_cache_operation(load_state_from_cache, st.session_state.file_hash):
                         st.success("Analysis state loaded from cache!")
                         st.experimental_rerun()
                     else:
@@ -625,11 +778,12 @@ def render_data_upload():
             
             with col3:
                 if st.button("View Cache Info"):
-                    cache_info = cache.get_cache_info()
-                    if cache_info:
-                        st.json(cache_info)
-                    else:
-                        st.info("No cache info available")
+                    if is_cache_available():
+                        cache_info = cache.get_cache_info()
+                        if cache_info:
+                            st.json(cache_info)
+                        else:
+                            st.info("No cache info available")
         
         # If cache is not loaded or user chooses to reprocess
         if not st.session_state.cache_loaded:
@@ -692,8 +846,6 @@ def render_data_upload():
             st.session_state.data = df
             st.session_state.original_data = df.copy()
             
-            # Calculate file hash for caching
-            st.session_state.file_hash = cache._get_file_hash(file_content)
             st.write("Data stored in session state")
             
             # Show column information
@@ -724,7 +876,8 @@ def render_data_upload():
                 st.error("No columns found in the file")
                 
             # Save state to cache
-            save_state_to_cache("Data Upload")
+            if is_cache_available():
+                save_state_to_cache(st.session_state.file_hash, st.session_state, "Data Upload")
     
     # Sample data option
     st.markdown("---")
@@ -755,13 +908,14 @@ def render_data_upload():
                 # Calculate file hash for caching
                 with open(sample_path, 'rb') as f:
                     file_content = f.read()
-                st.session_state.file_hash = cache._get_file_hash(file_content)
+                st.session_state.file_hash = get_file_hash(file_content)
                 
                 st.success(f"Sample data loaded! Shape: {df.shape}")
                 st.dataframe(df.head(10))
                 
                 # Save state to cache
-                save_state_to_cache("Data Upload")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Data Upload")
             else:
                 st.warning("Sample data file not found, creating new sample...")
                 
@@ -798,13 +952,14 @@ def render_data_upload():
                 st.session_state.original_data = sample_data.copy()
                 
                 # Calculate file hash for caching
-                st.session_state.file_hash = cache._get_file_hash(sample_data.to_csv().encode())
+                st.session_state.file_hash = get_file_hash(sample_data.to_csv().encode())
                 
                 st.success(f"Sample data loaded! Shape: {sample_data.shape}")
                 st.dataframe(sample_data.head(10))
                 
                 # Save state to cache
-                save_state_to_cache("Data Upload")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Data Upload")
                 
         except Exception as e:
             st.error(f"Error loading sample data: {str(e)}")
@@ -872,19 +1027,34 @@ def render_data_upload():
                     st.session_state.original_data = df.copy()
                     
                     # Calculate file hash for caching
-                    st.session_state.file_hash = cache._get_file_hash(csv_text.encode())
+                    st.session_state.file_hash = get_file_hash(csv_text.encode())
                     
                     st.success(f"Data loaded from text! Shape: {df.shape}")
                     st.dataframe(df.head(10))
                     
                     # Save state to cache
-                    save_state_to_cache("Data Upload")
+                    if is_cache_available():
+                        save_state_to_cache(st.session_state.file_hash, st.session_state, "Data Upload")
                 else:
                     st.warning("Please paste some CSV data")
             except Exception as e:
                 st.error(f"Error loading data from text: {str(e)}")
                 st.write("### Error Details")
                 st.text(traceback.format_exc())
+        
+        # Add cache information to the troubleshooting section
+        st.write("### Cache Information")
+        if st.session_state.file_hash:
+            st.write(f"Current file hash: {st.session_state.file_hash[:16]}...")
+            if is_cache_available():
+                cache_path = cache._get_cache_path(st.session_state.file_hash)
+                if cache_path.exists():
+                    st.write(f"Cache file exists: {cache_path.name}")
+                    st.write(f"Cache size: {cache_path.stat().st_size / 1024:.2f} KB")
+                else:
+                    st.write("No cache file exists for this file")
+        else:
+            st.write("No file hash available")
 
 # Column Mapping Page
 def render_column_mapping():
@@ -952,7 +1122,8 @@ def render_column_mapping():
         st.success("Column mapping updated!")
         
         # Save state to cache
-        save_state_to_cache("Column Mapping")
+        if is_cache_available():
+            save_state_to_cache(st.session_state.file_hash, st.session_state, "Column Mapping")
     
     # Show mapped columns preview
     if st.button("Preview Mapped Data"):
@@ -971,7 +1142,8 @@ def render_column_mapping():
             st.session_state.current_step = "Analysis Settings"
             
             # Save state to cache
-            save_state_to_cache("Column Mapping")
+            if is_cache_available():
+                save_state_to_cache(st.session_state.file_hash, st.session_state, "Column Mapping")
             
             st.success("Data processed successfully! You can now configure analysis settings.")
         except Exception as e:
@@ -1146,7 +1318,8 @@ def render_analysis_settings():
         st.session_state.current_step = "Run Detection"
         
         # Save state to cache
-        save_state_to_cache("Analysis Settings")
+        if is_cache_available():
+            save_state_to_cache(st.session_state.file_hash, st.session_state, "Analysis Settings")
         
         st.success("Settings saved! You can now run the detection analysis.")
 
@@ -1154,6 +1327,12 @@ def render_analysis_settings():
 def render_run_detection():
     """Render the run detection page"""
     st.title("🚀 Run Fraud Detection")
+    
+    # Check cache status
+    if st.session_state.cache_loaded:
+        st.info("Resuming from cached state. Some steps may be skipped.")
+        if st.session_state.cache_step_name:
+            st.info(f"Last completed step: {st.session_state.cache_step_name}")
     
     if st.session_state.processed_data is None:
         st.warning("Please process data first")
@@ -1247,7 +1426,8 @@ def render_run_detection():
                 # Save state after statistical features
                 st.session_state.features_df = features_df
                 st.session_state.feature_extractors = feature_extractors
-                save_state_to_cache("Statistical Features")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Statistical Features")
             
             # Graph features
             if settings["features"]["Graph Features"]:
@@ -1267,7 +1447,8 @@ def render_run_detection():
                 # Save state after graph features
                 st.session_state.features_df = features_df
                 st.session_state.feature_extractors = feature_extractors
-                save_state_to_cache("Graph Features")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Graph Features")
             
             # NLP features
             if settings["features"]["NLP Features"]:
@@ -1287,7 +1468,8 @@ def render_run_detection():
                 # Save state after NLP features
                 st.session_state.features_df = features_df
                 st.session_state.feature_extractors = feature_extractors
-                save_state_to_cache("NLP Features")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "NLP Features")
             
             # Time series features
             if settings["features"]["Time Series Features"]:
@@ -1307,7 +1489,8 @@ def render_run_detection():
                 # Save state after time series features
                 st.session_state.features_df = features_df
                 st.session_state.feature_extractors = feature_extractors
-                save_state_to_cache("Time Series Features")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Time Series Features")
             
             # Store feature extractors in session state
             st.session_state.feature_extractors = feature_extractors
@@ -1332,7 +1515,8 @@ def render_run_detection():
                 
                 # Save state after unsupervised models
                 st.session_state.model_results = model_results
-                save_state_to_cache("Unsupervised Models")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Unsupervised Models")
             
             # Supervised models
             if settings["models"]["Supervised Models"]:
@@ -1350,7 +1534,8 @@ def render_run_detection():
                 
                 # Save state after supervised models
                 st.session_state.model_results = model_results
-                save_state_to_cache("Supervised Models")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Supervised Models")
             
             # Rule-based models
             if settings["models"]["Rule-Based Models"]:
@@ -1368,7 +1553,8 @@ def render_run_detection():
                 
                 # Save state after rule-based models
                 st.session_state.model_results = model_results
-                save_state_to_cache("Rule-Based Models")
+                if is_cache_available():
+                    save_state_to_cache(st.session_state.file_hash, st.session_state, "Rule-Based Models")
             
             # Step 3: Risk Scoring
             log_analysis_progress("Step 3/5: Calculating Risk Scores...", 90)
@@ -1385,7 +1571,8 @@ def render_run_detection():
             
             # Save state after risk scoring
             st.session_state.risk_scores = risk_scores
-            save_state_to_cache("Risk Scoring")
+            if is_cache_available():
+                save_state_to_cache(st.session_state.file_hash, st.session_state, "Risk Scoring")
             
             # Step 4: Apply Thresholds
             log_analysis_progress("Step 4/5: Applying Thresholds...", 95)
@@ -1426,7 +1613,8 @@ def render_run_detection():
             st.session_state.current_step = "Results Dashboard"
             
             # Save state to cache
-            save_state_to_cache("Run Detection")
+            if is_cache_available():
+                save_state_to_cache(st.session_state.file_hash, st.session_state, "Run Detection")
             
             log_analysis_progress("Analysis complete!", 100)
             status_text.text("Analysis complete!")
@@ -1716,6 +1904,9 @@ def render_results_dashboard():
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Timestamp data not available for time series analysis")
+    
+    # Display cache information
+    display_cache_info()
 
 # Explainability Page
 def render_explainability():
@@ -2123,6 +2314,9 @@ def render_reports():
 def main():
     """Main function to run the Streamlit app"""
     page = render_sidebar()
+    
+    # Add cache management to sidebar
+    render_cache_management()
     
     if page == "Data Upload":
         render_data_upload()
