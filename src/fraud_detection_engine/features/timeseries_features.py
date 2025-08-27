@@ -2,7 +2,6 @@
 Time Series Features Module
 Implements time series feature extraction techniques for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -12,7 +11,6 @@ from statsmodels.tsa.stattools import acf, pacf
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -508,7 +506,7 @@ class TimeSeriesFeatures:
             
             # Create a time series of transaction counts
             # Resample to different frequencies
-            frequencies = ['1H', '6H', '1D', '1W']
+            frequencies = ['1H', '6H', '1D']
             
             for freq in frequencies:
                 # Count transactions per time period
@@ -709,3 +707,44 @@ class TimeSeriesFeatures:
         result_df = self.extract_features(df)
         
         return result_df
+    
+    def _serialize_for_cache(self):
+        """
+        Serialize time series features state for caching
+        
+        Returns:
+            dict: Serialized state
+        """
+        try:
+            state = {
+                'config': self.config,
+                'feature_names': self.feature_names,
+                'fitted': self.fitted
+            }
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error serializing time series features state: {str(e)}")
+            return None
+    
+    def _deserialize_from_cache(self, state):
+        """
+        Deserialize time series features state from cache
+        
+        Args:
+            state (dict): Serialized state
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            self.config = state.get('config', {})
+            self.feature_names = state.get('feature_names', [])
+            self.fitted = state.get('fitted', False)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deserializing time series features state: {str(e)}")
+            return False

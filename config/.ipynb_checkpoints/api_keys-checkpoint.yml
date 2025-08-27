@@ -2,7 +2,7 @@
 
 # Gemini API for AI integration
 gemini:
-  api_key: "YOUR_GEMINI_API_KEY"
+  api_key: "AIzaSyB_lLIZ_ZIE__qxMS-XwrqA6G5X6qY05W4"
   model: "gemini-pro"
   temperature: 0.2
   max_tokens: 1000
@@ -11,21 +11,21 @@ gemini:
 
 # OpenAI API (alternative)
 openai:
-  api_key: "YOUR_OPENAI_API_KEY"
+  api_key: "sk-ijklmnop5678efghijklmnop5678efghijklmnop"
   model: "gpt-4"
   temperature: 0.2
   max_tokens: 1000
 
 # News API for fraud pattern updates
 news_api:
-  api_key: "YOUR_NEWS_API_KEY"
+  api_key: "e42e914093885afa580f2084f00d06e7"
   sources: ["reuters", "bloomberg", "financial-times"]
   keywords: ["fraud", "money laundering", "financial crime", "cybersecurity"]
   lookback_days: 7
 
 # Geolocation API
 geolocation:
-  api_key: "YOUR_GEO_API_KEY"
+  api_key: "9520e3680de446a2b4dab44072e937d4"
   endpoint: "https://api.geolocation.example.com/v1"
 
 # Sanctions list APIs - NOT AVAILABLE

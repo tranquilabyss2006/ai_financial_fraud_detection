@@ -2,7 +2,6 @@
 Statistical Features Module
 Implements various statistical feature extraction techniques for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
@@ -12,7 +11,6 @@ from sklearn.decomposition import PCA
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,8 +80,6 @@ class StatisticalFeatures:
             DataFrame: DataFrame with Benford's Law features
         """
         try:
-            result_df = df.copy()
-            
             # Apply Benford's Law to amount column if it exists
             if 'amount' in df.columns:
                 # Get first digit of amounts
@@ -107,20 +103,23 @@ class StatisticalFeatures:
                             chi_square += (actual_count - expected_count) ** 2 / expected_count
                     
                     # Add features
+                    result_df = df.copy()
                     result_df['benford_chi_square'] = chi_square
                     result_df['benford_p_value'] = 1 - stats.chi2.cdf(chi_square, 8)  # 8 degrees of freedom
                     
                     # Calculate deviation for each digit
-                    for digit in range(1, 6):  # Just first 5 digits to avoid too many features
-                        actual_pct = actual_dist.get(digit, 0)
-                        expected_pct = benford_dist[digit]
-                        result_df[f'benford_deviation_{digit}'] = abs(actual_pct - expected_pct)
+                    for i in range(1, 6):  # Just first 5 digits to avoid too many features
+                        actual_pct = actual_dist.get(i, 0)
+                        expected_pct = benford_dist[i]
+                        result_df[f'benford_deviation_{i}'] = abs(actual_pct - expected_pct)
+                    
+                    return result_df
             
-            return result_df
+            return df.copy()
             
         except Exception as e:
             logger.error(f"Error extracting Benford's Law features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_zscore_features(self, df):
         """
@@ -200,7 +199,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting Z-score features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_mad_features(self, df):
         """
@@ -284,7 +283,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting MAD features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_percentile_features(self, df):
         """
@@ -335,7 +334,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting percentile features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_distribution_features(self, df):
         """
@@ -411,7 +410,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting distribution features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_mahalanobis_features(self, df):
         """
@@ -431,7 +430,7 @@ class StatisticalFeatures:
             
             if len(numeric_cols) < 2:
                 logger.warning("Not enough numeric columns for Mahalanobis distance calculation")
-                return result_df
+                return result_df.copy()
             
             # Prepare data
             X = df[numeric_cols].fillna(0)
@@ -467,7 +466,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting Mahalanobis features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_grubbs_features(self, df):
         """
@@ -514,7 +513,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting Grubbs' test features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_entropy_features(self, df):
         """
@@ -592,7 +591,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting entropy features: {str(e)}")
-            return df
+            return df.copy()
     
     def _calculate_series_entropy(self, series):
         """
@@ -635,7 +634,7 @@ class StatisticalFeatures:
             
             if len(numeric_cols) < 2:
                 logger.warning("Not enough numeric columns for correlation calculation")
-                return result_df
+                return result_df.copy()
             
             # Calculate correlation matrix
             corr_matrix = df[numeric_cols].corr().abs()
@@ -692,7 +691,7 @@ class StatisticalFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting correlation features: {str(e)}")
-            return df
+            return df.copy()
     
     def fit_transform(self, df):
         """

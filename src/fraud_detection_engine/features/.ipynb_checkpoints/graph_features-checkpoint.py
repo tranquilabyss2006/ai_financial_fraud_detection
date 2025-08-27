@@ -2,7 +2,6 @@
 Graph Features Module
 Implements graph-based feature extraction techniques for fraud detection
 """
-
 import pandas as pd
 import numpy as np
 import networkx as nx
@@ -12,7 +11,6 @@ from sklearn.preprocessing import MinMaxScaler
 import warnings
 import logging
 from typing import Dict, List, Tuple, Union
-
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -285,7 +283,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting centrality features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_clustering_features(self, df):
         """
@@ -354,7 +352,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting clustering features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_community_features(self, df):
         """
@@ -430,7 +428,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting community features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_path_features(self, df):
         """
@@ -554,7 +552,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting path features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_subgraph_features(self, df):
         """
@@ -659,7 +657,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting subgraph features: {str(e)}")
-            return df
+            return df.copy()
     
     def _extract_temporal_graph_features(self, df):
         """
@@ -803,7 +801,7 @@ class GraphFeatures:
             
         except Exception as e:
             logger.error(f"Error extracting temporal graph features: {str(e)}")
-            return df
+            return df.copy()
     
     def fit_transform(self, df):
         """
@@ -853,3 +851,88 @@ class GraphFeatures:
             result_df[feature_cols] = self.scaler.transform(result_df[feature_cols])
         
         return result_df
+    
+    def _serialize_for_cache(self):
+        """
+        Serialize graph features state for caching
+        
+        Returns:
+            dict: Serialized state
+        """
+        try:
+            state = {
+                'config': self.config,
+                'feature_names': self.feature_names,
+                'fitted': self.fitted
+            }
+            
+            # Handle scaler
+            if self.scaler is not None:
+                state['scaler'] = self.scaler
+            
+            # Handle graphs (NetworkX graphs can be serialized with pickle)
+            try:
+                import pickle
+                if self.graph is not None:
+                    state['graph'] = pickle.dumps(self.graph)
+                if self.sender_graph is not None:
+                    state['sender_graph'] = pickle.dumps(self.sender_graph)
+                if self.receiver_graph is not None:
+                    state['receiver_graph'] = pickle.dumps(self.receiver_graph)
+                if self.bipartite_graph is not None:
+                    state['bipartite_graph'] = pickle.dumps(self.bipartite_graph)
+            except Exception as e:
+                logger.warning(f"Error serializing graphs: {str(e)}")
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error serializing graph features state: {str(e)}")
+            return None
+    
+    def _deserialize_from_cache(self, state):
+        """
+        Deserialize graph features state from cache
+        
+        Args:
+            state (dict): Serialized state
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            import pickle
+            
+            self.config = state.get('config', {})
+            self.feature_names = state.get('feature_names', [])
+            self.fitted = state.get('fitted', False)
+            
+            # Handle scaler
+            if 'scaler' in state:
+                self.scaler = state['scaler']
+            else:
+                self.scaler = MinMaxScaler()
+            
+            # Handle graphs
+            try:
+                if 'graph' in state:
+                    self.graph = pickle.loads(state['graph'])
+                if 'sender_graph' in state:
+                    self.sender_graph = pickle.loads(state['sender_graph'])
+                if 'receiver_graph' in state:
+                    self.receiver_graph = pickle.loads(state['receiver_graph'])
+                if 'bipartite_graph' in state:
+                    self.bipartite_graph = pickle.loads(state['bipartite_graph'])
+            except Exception as e:
+                logger.warning(f"Error deserializing graphs: {str(e)}")
+                # Set graphs to None if deserialization fails
+                self.graph = None
+                self.sender_graph = None
+                self.receiver_graph = None
+                self.bipartite_graph = None
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deserializing graph features state: {str(e)}")
+            return False

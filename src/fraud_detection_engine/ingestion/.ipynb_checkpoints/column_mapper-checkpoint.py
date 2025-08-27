@@ -10,10 +10,13 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import yaml
 import os
+import pickle
+import zlib
+import hashlib
+from typing import Dict, List, Tuple, Optional
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 class ColumnMapper:
     """
     Class for mapping user columns to expected format
@@ -31,7 +34,7 @@ class ColumnMapper:
         self.synonyms = self._load_synonyms(config_path)
         self.patterns = self._load_patterns(config_path)
         self.mapping_history = []
-
+        
     def get_expected_columns(self):
         """
         Return the list of expected column names
@@ -40,7 +43,6 @@ class ColumnMapper:
             list: Expected column names
         """
         return list(self.expected_columns.keys())
-
     
     def _get_expected_columns(self):
         """
@@ -617,3 +619,46 @@ class ColumnMapper:
             suggestions[user_col] = col_suggestions
         
         return suggestions
+    
+    def _serialize_for_cache(self):
+        """
+        Serialize column mapper state for caching
+        
+        Returns:
+            dict: Serialized state
+        """
+        try:
+            state = {
+                'expected_columns': self.expected_columns,
+                'synonyms': self.synonyms,
+                'patterns': self.patterns,
+                'mapping_history': self.mapping_history
+            }
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error serializing column mapper state: {str(e)}")
+            return None
+    
+    def _deserialize_from_cache(self, state):
+        """
+        Deserialize column mapper state from cache
+        
+        Args:
+            state (dict): Serialized state
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            self.expected_columns = state.get('expected_columns', self._get_expected_columns())
+            self.synonyms = state.get('synonyms', self._load_synonyms())
+            self.patterns = state.get('patterns', self._load_patterns())
+            self.mapping_history = state.get('mapping_history', [])
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deserializing column mapper state: {str(e)}")
+            return False
